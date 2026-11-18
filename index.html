@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Personal Assets & Liabilities Management System</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">A</div>
+      <div><strong>AssetBook</strong><span>Financial Manager</span></div>
+    </div>
+    <nav>
+      <button class="nav-item active" data-page="dashboard"><span>⌂</span> Dashboard</button>
+      <button class="nav-item" data-page="records"><span>▦</span> Assets & Liabilities</button>
+      <button class="nav-item" data-page="balance"><span>⚖</span> Balance Sheet</button>
+      <button class="nav-item" data-page="backup"><span>⛁</span> Data Backup & Restore</button>
+      <button class="nav-item" data-page="settings"><span>⚙</span> Settings</button>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn" id="menuToggle" aria-label="Toggle menu">☰</button>
+      <div>
+        <h1 id="pageTitle">Dashboard</h1>
+        <p id="pageSubtitle">Financial overview</p>
+      </div>
+      <div class="top-actions">
+        <button class="btn btn-primary" id="quickAdd">＋ Add Record</button>
+      </div>
+    </header>
+
+    <section class="content" id="dashboardPage" data-page-panel>
+      <div class="filters card" id="dashboardFilters"></div>
+      <div class="cards-grid" id="summaryCards"></div>
+      <div class="charts-grid">
+        <div class="card chart-card"><h3>Assets vs Liabilities</h3><canvas id="comparisonChart"></canvas></div>
+        <div class="card chart-card"><h3>Assets by Category</h3><canvas id="assetsChart"></canvas></div>
+        <div class="card chart-card"><h3>Liabilities by Category</h3><canvas id="liabilitiesChart"></canvas></div>
+        <div class="card chart-card"><h3>Net Worth Trend</h3><canvas id="netWorthChart"></canvas></div>
+      </div>
+      <div class="card table-card">
+        <div class="table-toolbar">
+          <div><h3>Financial Records</h3><p id="recordCount"></p></div>
+          <input class="search" id="dashboardSearch" placeholder="Search records…">
+          <button class="btn" id="exportFiltered">Export Excel</button>
+          <button class="btn" id="printDashboard">Print Report</button>
+        </div>
+        <div class="table-wrap"><table id="dashboardTable"></table></div>
+        <div class="pagination" id="dashboardPagination"></div>
+      </div>
+    </section>
+
+    <section class="content hidden" id="recordsPage" data-page-panel>
+      <div class="toolbar">
+        <input class="search" id="recordSearch" placeholder="Search assets and liabilities…">
+        <select id="recordTypeFilter"><option value="">All Types</option><option value="Asset">Assets</option><option value="Liability">Liabilities</option></select>
+        <button class="btn btn-primary" id="addRecordBtn">＋ Add Record</button>
+      </div>
+      <div class="record-columns">
+        <div class="card"><div class="section-heading"><h3>Assets</h3><span id="assetRecordCount"></span></div><div id="assetList" class="record-list"></div></div>
+        <div class="card"><div class="section-heading"><h3>Liabilities</h3><span id="liabilityRecordCount"></span></div><div id="liabilityList" class="record-list"></div></div>
+      </div>
+    </section>
+
+    <section class="content hidden" id="balancePage" data-page-panel>
+      <div class="toolbar">
+        <select id="balanceYear"></select>
+        <select id="balanceMode"><option value="current">Current Balance Sheet</option><option value="historical">Historical Balance Sheet</option><option value="comparative">Comparative Balance Sheet</option></select>
+        <button class="btn" id="printBalance">Print</button>
+        <button class="btn" id="exportBalanceExcel">Export Excel</button>
+      </div>
+      <div class="card balance-card" id="balanceSheet"></div>
+    </section>
+
+    <section class="content hidden" id="backupPage" data-page-panel>
+      <div class="backup-grid">
+        <div class="card action-card">
+          <div class="action-icon">⇩</div><h3>Create Full Backup</h3>
+          <p>Download records, categories, settings, and original PDF files in a portable ZIP package.</p>
+          <button class="btn btn-primary" id="createBackup">Create Full Backup</button>
+        </div>
+        <div class="card action-card">
+          <div class="action-icon">⇧</div><h3>Restore Backup</h3>
+          <p>Select a previously created backup ZIP. Existing data can be replaced or merged.</p>
+          <input type="file" id="restoreFile" accept=".zip" hidden>
+          <button class="btn btn-primary" id="restoreBackup">Restore Backup</button>
+        </div>
+      </div>
+      <div class="card table-card"><h3>Backup History</h3><div class="table-wrap"><table id="backupTable"></table></div></div>
+    </section>
+
+    <section class="content hidden" id="settingsPage" data-page-panel>
+      <div class="settings-grid">
+        <div class="card settings-card">
+          <h3>General Settings</h3>
+          <label>Currency
+            <select id="currencySetting"><option value="BDT">BDT (৳)</option><option value="USD">USD ($)</option><option value="EUR">EUR (€)</option><option value="GBP">GBP (£)</option></select>
+          </label>
+          <label>Locale
+            <select id="localeSetting"><option value="en-BD">English (Bangladesh)</option><option value="en-US">English (US)</option></select>
+          </label>
+          <button class="btn btn-primary" id="saveSettings">Save Settings</button>
+        </div>
+        <div class="card settings-card">
+          <h3>Income Years</h3>
+          <div class="inline-form"><input id="newYear" type="number" placeholder="e.g. 2026"><button class="btn" id="addYear">Add</button></div>
+          <div id="yearList" class="chip-list"></div>
+        </div>
+        <div class="card settings-card">
+          <h3>Categories & Subcategories</h3>
+          <p>Manage the classification structure used by financial records.</p>
+          <button class="btn" id="manageCategories">Manage Categories</button>
+        </div>
+        <div class="card settings-card">
+          <h3>Excel Migration</h3>
+          <p>Import worksheets from Assets & Liabilities.xlsx. The original workbook is never modified.</p>
+          <input type="file" id="excelImport" accept=".xlsx,.xls" hidden>
+          <button class="btn" id="importExcel">Import Excel Workbook</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="recordModal" class="modal">
+    <form id="recordForm" method="dialog">
+      <div class="modal-head"><div><h2 id="recordModalTitle">Add Financial Record</h2><p id="recordModalSubtitle"></p></div><button type="button" class="close-btn" data-close-modal>×</button></div>
+      <div class="modal-body" id="recordFormFields"></div>
+      <div class="modal-foot"><button type="button" class="btn" data-close-modal>Cancel</button><button type="submit" class="btn btn-primary">Save Record</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="categoryModal" class="modal">
+    <div class="modal-head"><div><h2>Manage Categories</h2></div><button type="button" class="close-btn" data-close-modal>×</button></div>
+    <div class="modal-body">
+      <div class="category-editor">
+        <form id="categoryForm">
+          <label>Financial Type<select id="categoryType" required><option>Asset</option><option>Liability</option></select></label>
+          <label>Category Name<input id="categoryName" required></label>
+          <label>Subcategory Name<input id="subcategoryName" required></label>
+          <button class="btn btn-primary" type="submit">Add Category / Subcategory</button>
+        </form>
+        <div id="categoryTree"></div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="confirmModal" class="modal modal-small">
+    <div class="modal-head"><h2 id="confirmTitle">Confirm Action</h2></div>
+    <div class="modal-body"><p id="confirmMessage"></p></div>
+    <div class="modal-foot"><button class="btn" id="confirmCancel">Cancel</button><button class="btn btn-danger" id="confirmOk">Confirm</button></div>
+  </dialog>
+
+  <dialog id="restoreModal" class="modal modal-small">
+    <div class="modal-head"><h2>Restore Backup</h2></div>
+    <div class="modal-body">
+      <p>Choose how to restore the selected backup.</p>
+      <label><input type="radio" name="restoreMode" value="replace" checked> Replace existing data</label>
+      <label><input type="radio" name="restoreMode" value="merge"> Merge data (preserve existing IDs)</label>
+    </div>
+    <div class="modal-foot"><button class="btn" data-close-modal>Cancel</button><button class="btn btn-primary" id="confirmRestore">Restore</button></div>
+  </dialog>
+
+  <div id="toastRegion" class="toast-region"></div>
+  <input type="file" id="replaceDocumentFile" accept=".pdf,application/pdf" hidden>
+  <script src="app.js"></script>
+</body>
+</html>
