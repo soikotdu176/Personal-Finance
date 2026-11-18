@@ -398,12 +398,31 @@ function viewRecord(id){
   const r=state.records.find(x=>x.id===id);if(!r)return;
   document.getElementById('recordModalTitle').textContent=r.particulars||r.name||'Financial Record';
   document.getElementById('recordModalSubtitle').textContent=`${r.category} / ${r.subcategory}`;
+  const documents=(r.documentIds||[])
+    .map(documentId=>state.documents.find(doc=>doc.id===documentId))
+    .filter(Boolean);
+  const documentSection=documents.length?`
+    <label class="full document-view-section">Attached PDF Documents
+      <div class="document-view-list">${documents.map(doc=>`
+        <div class="document-view-item">
+          <div class="document-info">
+            <strong>${esc(doc.name||doc.title||'document.pdf')}</strong>
+            <span>${formatFileSize(doc.size)}</span>
+          </div>
+          <div class="document-actions">
+            <button type="button" class="btn" onclick="previewDocument('${esc(doc.id)}')">View PDF</button>
+            <button type="button" class="btn btn-primary" onclick="downloadDocument('${esc(doc.id)}')">Download</button>
+          </div>
+        </div>`).join('')}
+      </div>
+    </label>`:'';
   document.getElementById('recordFormFields').innerHTML=`<div class="form-grid">
     <label>Type<strong>${esc(r.type)}</strong></label><label>Date<strong>${esc(r.date||'—')}</strong></label>
     <label>Income Year<strong>${esc(r.incomeYear||'—')}</strong></label><label>Amount / Balance<strong>${formatMoney(recordAmount(r))}</strong></label>
     <label class="full">Details<strong>${esc(r.details||r.description||'—')}</strong></label>
     <label>Purchase Value<strong>${r.purchaseValue?formatMoney(r.purchaseValue):'—'}</strong></label><label>Current Market Value<strong>${r.currentMarketValue?formatMoney(r.currentMarketValue):'—'}</strong></label>
     <label class="full">Remarks<strong>${esc(r.remarks||'—')}</strong></label>
+    ${documentSection}
   </div>`;
   document.querySelector('#recordForm .modal-foot').innerHTML='<button type="button" class="btn" data-close-modal>Close</button>';
   document.getElementById('recordModal').showModal();
