@@ -2,61 +2,87 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Personal Assets & Liabilities Management System</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#4f46e5">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="AssetBook">
+  <title>AssetBook — Personal Assets & Liabilities Manager</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
 </head>
 <body>
+  <div class="bg-orb orb-1" aria-hidden="true"></div>
+  <div class="bg-orb orb-2" aria-hidden="true"></div>
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
   <aside class="sidebar" id="sidebar">
     <div class="brand">
-      <div class="brand-mark">A</div>
-      <div><strong>AssetBook</strong><span>Financial Manager</span></div>
+      <div class="brand-mark">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      </div>
+      <div><strong>AssetBook</strong><span>Wealth &amp; Ledger Studio</span></div>
     </div>
-    <nav>
-      <button class="nav-item active" data-page="dashboard"><span>⌂</span> Dashboard</button>
-      <button class="nav-item" data-page="records"><span>▦</span> Assets & Liabilities</button>
-      <button class="nav-item" data-page="balance"><span>⚖</span> Balance Sheet</button>
-      <button class="nav-item" data-page="backup"><span>⛁</span> Data Backup & Restore</button>
-      <button class="nav-item" data-page="settings"><span>⚙</span> Settings</button>
+    <nav id="sideNav">
+      <button class="nav-item active" data-page="dashboard"><span class="nav-ico">⌂</span><span>Dashboard</span></button>
+      <button class="nav-item" data-page="records"><span class="nav-ico">▦</span><span>Assets &amp; Liabilities</span></button>
+      <button class="nav-item" data-page="balance"><span class="nav-ico">⚖</span><span>Balance Sheet</span></button>
+      <button class="nav-item" data-page="backup"><span class="nav-ico">⛁</span><span>Backup &amp; Restore</span></button>
+      <button class="nav-item" data-page="settings"><span class="nav-ico">⚙</span><span>Settings</span></button>
     </nav>
+    <div class="sidebar-footer">
+      <button class="btn btn-install hidden" id="installAppSide">📲 Install Mobile App</button>
+      <div class="sync-pill"><span class="dot"></span> Offline-Ready Local Vault</div>
+    </div>
   </aside>
 
   <main class="main">
     <header class="topbar">
       <button class="icon-btn" id="menuToggle" aria-label="Toggle menu">☰</button>
-      <div>
+      <div class="page-heading">
         <h1 id="pageTitle">Dashboard</h1>
-        <p id="pageSubtitle">Financial overview</p>
+        <p id="pageSubtitle">Real-time wealth overview &amp; financial analytics</p>
       </div>
       <div class="top-actions">
-        <button class="btn btn-primary" id="quickAdd">＋ Add Record</button>
+        <button class="btn btn-install hidden" id="installAppTop">📲 Install App</button>
+        <button class="btn btn-primary btn-glow" id="quickAdd"><span>＋</span> Add Record</button>
       </div>
     </header>
 
-    <section class="content" id="dashboardPage" data-page-panel>
-      <div class="filters card" id="dashboardFilters"></div>
+    <!-- DASHBOARD -->
+    <section class="content page-enter" id="dashboardPage" data-page-panel>
+      <div class="filters card glass" id="dashboardFilters"></div>
       <div class="cards-grid" id="summaryCards"></div>
       <div class="charts-grid">
-        <div class="card chart-card"><h3>Assets vs Liabilities</h3><canvas id="comparisonChart"></canvas></div>
-        <div class="card chart-card"><h3>Assets by Category</h3><canvas id="assetsChart"></canvas></div>
-        <div class="card chart-card"><h3>Liabilities by Category</h3><canvas id="liabilitiesChart"></canvas></div>
-        <div class="card chart-card"><h3>Net Worth Trend</h3><canvas id="netWorthChart"></canvas></div>
+        <div class="card glass chart-card"><h3>Assets vs Liabilities</h3><div class="canvas-box"><canvas id="comparisonChart"></canvas></div></div>
+        <div class="card glass chart-card"><h3>Assets by Category</h3><div class="canvas-box"><canvas id="assetsChart"></canvas></div></div>
+        <div class="card glass chart-card"><h3>Liabilities by Category</h3><div class="canvas-box"><canvas id="liabilitiesChart"></canvas></div></div>
+        <div class="card glass chart-card"><h3>Net Worth Trend</h3><div class="canvas-box"><canvas id="netWorthChart"></canvas></div></div>
       </div>
-      <div class="card table-card">
+      <div class="card glass table-card">
         <div class="table-toolbar">
-          <div><h3>Financial Records</h3><p id="recordCount"></p></div>
-          <input class="search" id="dashboardSearch" placeholder="Search records…">
-          <button class="btn" id="exportFiltered">Export Excel</button>
-          <button class="btn" id="printDashboard">Print Report</button>
+          <div><h3>Filtered Financial Records</h3><p id="recordCount"></p></div>
+          <div class="toolbar-controls">
+            <input class="search" id="dashboardSearch" placeholder="Search records…">
+            <button class="btn btn-emerald" id="generatePdfReport">📄 PDF Report</button>
+            <button class="btn btn-indigo" id="exportFiltered">📊 Excel Report</button>
+            <button class="btn" id="printDashboard">🖨 Print</button>
+          </div>
         </div>
         <div class="table-wrap"><table id="dashboardTable"></table></div>
         <div class="pagination" id="dashboardPagination"></div>
       </div>
     </section>
 
+    <!-- RECORDS -->
     <section class="content hidden" id="recordsPage" data-page-panel>
       <div class="toolbar">
         <input class="search" id="recordSearch" placeholder="Search assets and liabilities…">
@@ -64,41 +90,44 @@
         <button class="btn btn-primary" id="addRecordBtn">＋ Add Record</button>
       </div>
       <div class="record-columns">
-        <div class="card"><div class="section-heading"><h3>Assets</h3><span id="assetRecordCount"></span></div><div id="assetList" class="record-list"></div></div>
-        <div class="card"><div class="section-heading"><h3>Liabilities</h3><span id="liabilityRecordCount"></span></div><div id="liabilityList" class="record-list"></div></div>
+        <div class="card glass"><div class="section-heading"><h3>Assets</h3><span id="assetRecordCount" class="pill-count"></span></div><div id="assetList" class="record-list"></div></div>
+        <div class="card glass"><div class="section-heading"><h3>Liabilities</h3><span id="liabilityRecordCount" class="pill-count"></span></div><div id="liabilityList" class="record-list"></div></div>
       </div>
     </section>
 
+    <!-- BALANCE SHEET -->
     <section class="content hidden" id="balancePage" data-page-panel>
       <div class="toolbar">
         <select id="balanceYear"></select>
         <select id="balanceMode"><option value="current">Current Balance Sheet</option><option value="historical">Historical Balance Sheet</option><option value="comparative">Comparative Balance Sheet</option></select>
-        <button class="btn" id="printBalance">Print</button>
-        <button class="btn" id="exportBalanceExcel">Export Excel</button>
+        <button class="btn" id="printBalance">🖨 Print</button>
+        <button class="btn btn-indigo" id="exportBalanceExcel">📊 Export Excel</button>
       </div>
-      <div class="card balance-card" id="balanceSheet"></div>
+      <div class="card glass balance-card" id="balanceSheet"></div>
     </section>
 
+    <!-- BACKUP -->
     <section class="content hidden" id="backupPage" data-page-panel>
       <div class="backup-grid">
-        <div class="card action-card">
+        <div class="card glass action-card">
           <div class="action-icon">⇩</div><h3>Create Full Backup</h3>
           <p>Download records, categories, settings, and original PDF files in a portable ZIP package.</p>
           <button class="btn btn-primary" id="createBackup">Create Full Backup</button>
         </div>
-        <div class="card action-card">
+        <div class="card glass action-card">
           <div class="action-icon">⇧</div><h3>Restore Backup</h3>
           <p>Select a previously created backup ZIP. Existing data can be replaced or merged.</p>
           <input type="file" id="restoreFile" accept=".zip" hidden>
           <button class="btn btn-primary" id="restoreBackup">Restore Backup</button>
         </div>
       </div>
-      <div class="card table-card"><h3>Backup History</h3><div class="table-wrap"><table id="backupTable"></table></div></div>
+      <div class="card glass table-card"><h3>Backup History</h3><div class="table-wrap"><table id="backupTable"></table></div></div>
     </section>
 
+    <!-- SETTINGS -->
     <section class="content hidden" id="settingsPage" data-page-panel>
       <div class="settings-grid">
-        <div class="card settings-card">
+        <div class="card glass settings-card">
           <h3>General Settings</h3>
           <label>Currency
             <select id="currencySetting"><option value="BDT">BDT (৳)</option><option value="USD">USD ($)</option><option value="EUR">EUR (€)</option><option value="GBP">GBP (£)</option></select>
@@ -108,34 +137,66 @@
           </label>
           <button class="btn btn-primary" id="saveSettings">Save Settings</button>
         </div>
-        <div class="card settings-card">
+        <div class="card glass settings-card">
           <h3>Income Years</h3>
-          <div class="inline-form"><input id="newYear" type="number" placeholder="e.g. 2026"><button class="btn" id="addYear">Add</button></div>
+          <div class="inline-form"><input id="newYear" type="text" placeholder="e.g. 2026-27"><button class="btn btn-primary" id="addYear">Add</button></div>
           <div id="yearList" class="chip-list"></div>
         </div>
-        <div class="card settings-card">
-          <h3>Categories & Subcategories</h3>
+        <div class="card glass settings-card">
+          <h3>Categories &amp; Subcategories</h3>
           <p>Manage the classification structure used by financial records.</p>
           <button class="btn" id="manageCategories">Manage Categories</button>
         </div>
-        <div class="card settings-card">
+        <div class="card glass settings-card">
           <h3>Excel Migration</h3>
-          <p>Import worksheets from Assets & Liabilities.xlsx. The original workbook is never modified.</p>
+          <p>Import worksheets from Assets &amp; Liabilities.xlsx. Automatically maps all 15 sheets and fields.</p>
           <input type="file" id="excelImport" accept=".xlsx,.xls" hidden>
-          <button class="btn" id="importExcel">Import Excel Workbook</button>
+          <button class="btn btn-indigo" id="importExcel">Import Excel Workbook</button>
         </div>
       </div>
     </section>
   </main>
 
+  <!-- MOBILE BOTTOM NAV -->
+  <nav class="mobile-bottom-nav" aria-label="Mobile Navigation">
+    <button class="m-nav-item active" data-page="dashboard"><span>⌂</span><small>Home</small></button>
+    <button class="m-nav-item" data-page="records"><span>▦</span><small>Records</small></button>
+    <button class="m-nav-fab" id="mobileQuickAdd" aria-label="Add Record">＋</button>
+    <button class="m-nav-item" data-page="balance"><span>⚖</span><small>Balance</small></button>
+    <button class="m-nav-item" data-page="settings"><span>⚙</span><small>More</small></button>
+  </nav>
+
+  <!-- RECORD MODAL -->
   <dialog id="recordModal" class="modal">
     <form id="recordForm" method="dialog">
-      <div class="modal-head"><div><h2 id="recordModalTitle">Add Financial Record</h2><p id="recordModalSubtitle"></p></div><button type="button" class="close-btn" data-close-modal>×</button></div>
+      <div class="modal-head">
+        <div><h2 id="recordModalTitle">Add Financial Record</h2><p id="recordModalSubtitle"></p></div>
+        <button type="button" class="close-btn" data-close-modal>×</button>
+      </div>
       <div class="modal-body" id="recordFormFields"></div>
-      <div class="modal-foot"><button type="button" class="btn" data-close-modal>Cancel</button><button type="submit" class="btn btn-primary">Save Record</button></div>
+      <div class="modal-foot">
+        <button type="button" class="btn" data-close-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Record</button>
+      </div>
     </form>
   </dialog>
 
+  <!-- PDF VIEWER MODAL -->
+  <dialog id="pdfViewerModal" class="modal modal-large">
+    <div class="modal-head">
+      <div><h2 id="pdfViewerTitle">Document Preview</h2><p id="pdfViewerMeta"></p></div>
+      <div class="modal-head-actions">
+        <a id="pdfViewerDownload" class="btn btn-primary" download="document.pdf">⬇ Download PDF</a>
+        <button type="button" class="btn" id="pdfViewerNewTab">↗ Open Tab</button>
+        <button type="button" class="close-btn" data-close-modal>×</button>
+      </div>
+    </div>
+    <div class="modal-body pdf-viewer-body">
+      <iframe id="pdfViewerFrame" title="PDF Document Preview"></iframe>
+    </div>
+  </dialog>
+
+  <!-- CATEGORY MODAL -->
   <dialog id="categoryModal" class="modal">
     <div class="modal-head"><div><h2>Manage Categories</h2></div><button type="button" class="close-btn" data-close-modal>×</button></div>
     <div class="modal-body">
@@ -151,18 +212,20 @@
     </div>
   </dialog>
 
+  <!-- CONFIRM MODAL -->
   <dialog id="confirmModal" class="modal modal-small">
     <div class="modal-head"><h2 id="confirmTitle">Confirm Action</h2></div>
     <div class="modal-body"><p id="confirmMessage"></p></div>
     <div class="modal-foot"><button class="btn" id="confirmCancel">Cancel</button><button class="btn btn-danger" id="confirmOk">Confirm</button></div>
   </dialog>
 
+  <!-- RESTORE MODAL -->
   <dialog id="restoreModal" class="modal modal-small">
     <div class="modal-head"><h2>Restore Backup</h2></div>
     <div class="modal-body">
       <p>Choose how to restore the selected backup.</p>
-      <label><input type="radio" name="restoreMode" value="replace" checked> Replace existing data</label>
-      <label><input type="radio" name="restoreMode" value="merge"> Merge data (preserve existing IDs)</label>
+      <label class="radio-row"><input type="radio" name="restoreMode" value="replace" checked> Replace existing data</label>
+      <label class="radio-row"><input type="radio" name="restoreMode" value="merge"> Merge data (preserve existing IDs)</label>
     </div>
     <div class="modal-foot"><button class="btn" data-close-modal>Cancel</button><button class="btn btn-primary" id="confirmRestore">Restore</button></div>
   </dialog>
