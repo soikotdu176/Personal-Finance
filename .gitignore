@@ -1,0 +1,17 @@
+# ---- Personal data: never commit, never deploy ----
+# The source workbook and every backup ZIP contain real financial records.
+Assets & Liabilities.xlsx
+*.xlsx
+*.xls
+*.zip
+.backup/
+
+# ---- Dev scratch files ----
+_smoke.mjs
+_checks.json
+_audit.js
+
+# ---- OS / editor ----
+Thumbs.db
+desktop.ini
+.DS_Store

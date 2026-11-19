@@ -3,78 +3,129 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#4f46e5">
+  <title>Personal Finance - SOIKOT RAIHAN</title>
+  <meta name="description" content="Personal Finance: offline-first personal assets & liabilities manager.">
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#4f46e5" id="metaThemeColor">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="AssetBook">
-  <title>AssetBook — Personal Assets & Liabilities Manager</title>
-  <link rel="manifest" href="manifest.json">
+  <meta name="apple-mobile-web-app-title" content="Personal Finance">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+
+  <!-- Fonts (system fallbacks are used when offline) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&family=Playfair+Display:wght@700&family=Outfit:wght@300;400&display=swap">
+
+  <!-- Apply the saved theme before first paint to avoid a flash -->
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('assetbook-theme');
+        var theme = saved || (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+        var meta = document.getElementById('metaThemeColor');
+        if (meta) meta.setAttribute('content', theme === 'dark' ? '#0b1020' : '#4f46e5');
+      } catch (e) {}
+    })();
+  </script>
+
+  <link rel="stylesheet" href="styles.css?v=4">
+  <!-- Third-party libraries, pinned + Subresource Integrity so a compromised CDN cannot inject code -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js" integrity="sha384-Xl/CUCfJbzsngMp0CFxkmF0VW/8C160IsGujqeQlIhaGxKz2+JsIGORFqtCPeldF" crossorigin="anonymous"></script>
 </head>
 <body>
-  <div class="bg-orb orb-1" aria-hidden="true"></div>
-  <div class="bg-orb orb-2" aria-hidden="true"></div>
-  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+  <!-- SVG icon sprite -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <defs>
+      <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></symbol>
+      <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+      <symbol id="i-scale" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M6 21h12M5 7h14M5 7l-3 7a3.2 3.2 0 0 0 6 0zM19 7l-3 7a3.2 3.2 0 0 0 6 0z"/></symbol>
+      <symbol id="i-backup" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></symbol>
+      <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></symbol>
+      <symbol id="i-sheet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/></symbol>
+      <symbol id="i-phone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></symbol>
+      <symbol id="i-print" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9V3h10v6M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/><rect x="7" y="14" width="10" height="7" rx="1"/></symbol>
+      <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+      <symbol id="i-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8M15 7h6v6"/></symbol>
+      <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l6 6 4-4 8 8M15 17h6v-6"/></symbol>
+      <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></symbol>
+    </defs>
+  </svg>
 
   <aside class="sidebar" id="sidebar">
     <div class="brand">
-      <div class="brand-mark">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-      </div>
-      <div><strong>AssetBook</strong><span>Wealth &amp; Ledger Studio</span></div>
+      <svg class="brand-logo" viewBox="0 0 124 124" role="img" aria-label="SOIKOT RAIHAN circle monogram logo">
+        <circle cx="62" cy="62" r="58" fill="none" stroke="currentColor" stroke-width="4"></circle>
+        <text x="62" y="84" text-anchor="middle" font-family="'Playfair Display', Georgia, serif" font-weight="700" font-size="62" letter-spacing="-5.5" fill="currentColor">SR</text>
+      </svg>
+      <div><strong>Personal Finance</strong><span>SOIKOT RAIHAN</span></div>
     </div>
-    <nav id="sideNav">
-      <button class="nav-item active" data-page="dashboard"><span class="nav-ico" aria-hidden="true">⌂</span><span class="nav-label">Dashboard</span></button>
-      <button class="nav-item" data-page="records"><span class="nav-ico" aria-hidden="true">▦</span><span class="nav-label">Assets &amp; Liabilities</span></button>
-      <button class="nav-item" data-page="balance"><span class="nav-ico" aria-hidden="true">⚖</span><span class="nav-label">Balance Sheet</span></button>
-      <button class="nav-item" data-page="backup"><span class="nav-ico" aria-hidden="true">⛁</span><span class="nav-label">Backup &amp; Restore</span></button>
-      <button class="nav-item" data-page="settings"><span class="nav-ico" aria-hidden="true">⚙</span><span class="nav-label">Settings</span></button>
+    <nav class="side-nav" id="sideNav" aria-label="Main">
+      <span class="nav-pill" aria-hidden="true"></span>
+      <button class="nav-item active" data-page="dashboard"><svg class="ic" aria-hidden="true"><use href="#i-home"/></svg><b>Dashboard</b></button>
+      <button class="nav-item" data-page="records"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg><b>Assets &amp; Liabilities</b></button>
+      <button class="nav-item" data-page="balance"><svg class="ic" aria-hidden="true"><use href="#i-scale"/></svg><b>Balance Sheet</b></button>
+      <button class="nav-item" data-page="backup"><svg class="ic" aria-hidden="true"><use href="#i-backup"/></svg><b>Data Backup &amp; Restore</b></button>
+      <button class="nav-item" data-page="settings"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg><b>Settings</b></button>
     </nav>
-    <div class="sidebar-footer">
-      <button class="btn btn-install hidden" id="installAppSide">📲 Install Mobile App</button>
-      <div class="sync-pill"><span class="dot"></span><span>Offline-Ready Local Vault</span></div>
-    </div>
+    <div class="sidebar-foot"><span class="dot"></span> Offline-ready · data stays on this device</div>
   </aside>
+  <div class="scrim" id="scrim"></div>
 
   <main class="main">
     <header class="topbar">
-      <button class="icon-btn" id="menuToggle" aria-label="Toggle menu">☰</button>
-      <div class="page-heading">
+      <button class="icon-btn menu-toggle" id="menuToggle" aria-label="Toggle menu"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg></button>
+      <div class="title-block">
         <h1 id="pageTitle">Dashboard</h1>
-        <p id="pageSubtitle">Real-time wealth overview &amp; financial analytics</p>
+        <p id="pageSubtitle">Financial overview</p>
       </div>
       <div class="top-actions">
-        <button class="btn btn-install hidden" id="installAppTop">📲 Install App</button>
-        <button class="btn btn-primary btn-glow" id="quickAdd"><span>＋</span> Add Record</button>
+        <button class="btn btn-soft hidden" id="installBtn" title="Install Personal Finance as an app"><svg class="ic" aria-hidden="true"><use href="#i-phone"/></svg><span>Install App</span></button>
+        <button class="icon-btn round" id="themeToggle" aria-label="Toggle dark mode" title="Toggle dark mode"><svg class="ic icon-moon" aria-hidden="true"><use href="#i-moon"/></svg><svg class="ic icon-sun" aria-hidden="true"><use href="#i-sun"/></svg></button>
+        <button class="btn btn-primary" id="quickAdd"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg><span>Add Record</span></button>
       </div>
     </header>
 
-    <!-- DASHBOARD -->
-    <section class="content page-enter" id="dashboardPage" data-page-panel>
-      <div class="filters card glass" id="dashboardFilters"></div>
-      <div class="cards-grid" id="summaryCards"></div>
-      <div class="charts-grid">
-        <div class="card glass chart-card"><h3>Assets vs Liabilities</h3><div class="canvas-box"><canvas id="comparisonChart"></canvas></div></div>
-        <div class="card glass chart-card"><h3>Assets by Category</h3><div class="canvas-box"><canvas id="assetsChart"></canvas></div></div>
-        <div class="card glass chart-card"><h3>Liabilities by Category</h3><div class="canvas-box"><canvas id="liabilitiesChart"></canvas></div></div>
-        <div class="card glass chart-card"><h3>Net Worth Trend</h3><div class="canvas-box"><canvas id="netWorthChart"></canvas></div></div>
+    <section class="content" id="dashboardPage" data-page-panel>
+      <div class="filters card" id="dashboardFilters"></div>
+      <div class="cards-grid" id="summaryCards">
+        <div class="summary-card skeleton-card"><div class="sk sk-icon"></div><div class="sk-lines"><div class="sk sk-line short"></div><div class="sk sk-line"></div></div></div>
+        <div class="summary-card skeleton-card"><div class="sk sk-icon"></div><div class="sk-lines"><div class="sk sk-line short"></div><div class="sk sk-line"></div></div></div>
+        <div class="summary-card skeleton-card"><div class="sk sk-icon"></div><div class="sk-lines"><div class="sk sk-line short"></div><div class="sk sk-line"></div></div></div>
+        <div class="summary-card skeleton-card"><div class="sk sk-icon"></div><div class="sk-lines"><div class="sk sk-line short"></div><div class="sk sk-line"></div></div></div>
+        <div class="summary-card skeleton-card"><div class="sk sk-icon"></div><div class="sk-lines"><div class="sk sk-line short"></div><div class="sk sk-line"></div></div></div>
+        <div class="summary-card skeleton-card"><div class="sk sk-icon"></div><div class="sk-lines"><div class="sk sk-line short"></div><div class="sk sk-line"></div></div></div>
       </div>
-      <div class="card glass table-card">
+      <div class="charts-grid">
+        <div class="card chart-card"><h3>Assets vs Liabilities</h3><div class="chart-box"><canvas id="comparisonChart"></canvas></div></div>
+        <div class="card chart-card"><h3>Assets by Category</h3><div class="chart-box"><canvas id="assetsChart"></canvas></div></div>
+        <div class="card chart-card"><h3>Liabilities by Category</h3><div class="chart-box"><canvas id="liabilitiesChart"></canvas></div></div>
+        <div class="card chart-card"><h3>Net Worth Trend</h3><div class="chart-box"><canvas id="netWorthChart"></canvas></div></div>
+      </div>
+      <div class="card table-card">
         <div class="table-toolbar">
-          <div><h3>Filtered Financial Records</h3><p id="recordCount"></p></div>
-          <div class="toolbar-controls">
-            <input class="search" id="dashboardSearch" placeholder="Search records…">
-            <button class="btn btn-emerald" id="generatePdfReport">📄 PDF Report</button>
-            <button class="btn btn-indigo" id="exportFiltered">📊 Excel Report</button>
-            <button class="btn" id="printDashboard">🖨 Print</button>
+          <div class="tt-title"><h3>Financial Records</h3><p id="recordCount" aria-live="polite"></p></div>
+          <input class="search" id="dashboardSearch" placeholder="Search records…" aria-label="Search records">
+          <div class="tt-actions">
+            <button class="btn" id="exportFiltered" title="Flat data export of the filtered records"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg><span>Export Data</span></button>
+            <button class="btn" id="printDashboard"><svg class="ic" aria-hidden="true"><use href="#i-print"/></svg><span>Print</span></button>
+            <button class="btn btn-pdf" id="generatePdfReport"><svg class="ic" aria-hidden="true"><use href="#i-file"/></svg><span>Generate PDF Report</span></button>
+            <button class="btn btn-xls" id="generateExcelReport"><svg class="ic" aria-hidden="true"><use href="#i-sheet"/></svg><span>Generate Excel Report</span></button>
           </div>
         </div>
         <div class="table-wrap"><table id="dashboardTable"></table></div>
@@ -82,52 +133,47 @@
       </div>
     </section>
 
-    <!-- RECORDS -->
     <section class="content hidden" id="recordsPage" data-page-panel>
       <div class="toolbar">
-        <input class="search" id="recordSearch" placeholder="Search assets and liabilities…">
-        <select id="recordTypeFilter"><option value="">All Types</option><option value="Asset">Assets</option><option value="Liability">Liabilities</option></select>
-        <button class="btn btn-primary" id="addRecordBtn">＋ Add Record</button>
+        <input class="search" id="recordSearch" placeholder="Search assets and liabilities…" aria-label="Search assets and liabilities">
+        <select id="recordTypeFilter" aria-label="Filter by type"><option value="">All Types</option><option value="Asset">Assets</option><option value="Liability">Liabilities</option></select>
+        <button class="btn btn-primary" id="addRecordBtn"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg><span>Add Record</span></button>
       </div>
       <div class="record-columns">
-        <div class="card glass"><div class="section-heading"><h3>Assets</h3><span id="assetRecordCount" class="pill-count"></span></div><div id="assetList" class="record-list"></div></div>
-        <div class="card glass"><div class="section-heading"><h3>Liabilities</h3><span id="liabilityRecordCount" class="pill-count"></span></div><div id="liabilityList" class="record-list"></div></div>
+        <div class="card"><div class="section-heading"><h3>Assets</h3><span id="assetRecordCount"></span></div><div id="assetList" class="record-list"></div></div>
+        <div class="card"><div class="section-heading"><h3>Liabilities</h3><span id="liabilityRecordCount"></span></div><div id="liabilityList" class="record-list"></div></div>
       </div>
     </section>
 
-    <!-- BALANCE SHEET -->
     <section class="content hidden" id="balancePage" data-page-panel>
       <div class="toolbar">
-        <select id="balanceYear"></select>
-        <select id="balanceMode"><option value="current">Current Balance Sheet</option><option value="historical">Historical Balance Sheet</option><option value="comparative">Comparative Balance Sheet</option></select>
-        <button class="btn" id="printBalance">🖨 Print</button>
-        <button class="btn btn-indigo" id="exportBalanceExcel">📊 Export Excel</button>
+        <select id="balanceYear" aria-label="Financial year"></select>
+        <button class="btn" id="printBalance"><svg class="ic" aria-hidden="true"><use href="#i-print"/></svg><span>Print</span></button>
+        <button class="btn" id="exportBalanceExcel"><svg class="ic" aria-hidden="true"><use href="#i-sheet"/></svg><span>Export Excel</span></button>
       </div>
-      <div class="card glass balance-card" id="balanceSheet"></div>
+      <div class="card balance-card" id="balanceSheet"></div>
     </section>
 
-    <!-- BACKUP -->
     <section class="content hidden" id="backupPage" data-page-panel>
       <div class="backup-grid">
-        <div class="card glass action-card">
-          <div class="action-icon">⇩</div><h3>Create Full Backup</h3>
+        <div class="card action-card">
+          <div class="action-icon"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg></div><h3>Create Full Backup</h3>
           <p>Download records, categories, settings, and original PDF files in a portable ZIP package.</p>
           <button class="btn btn-primary" id="createBackup">Create Full Backup</button>
         </div>
-        <div class="card glass action-card">
-          <div class="action-icon">⇧</div><h3>Restore Backup</h3>
+        <div class="card action-card">
+          <div class="action-icon up"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg></div><h3>Restore Backup</h3>
           <p>Select a previously created backup ZIP. Existing data can be replaced or merged.</p>
-          <input type="file" id="restoreFile" accept=".zip" hidden>
+          <input type="file" id="restoreFile" accept=".zip,application/zip,application/x-zip-compressed,application/octet-stream" hidden>
           <button class="btn btn-primary" id="restoreBackup">Restore Backup</button>
         </div>
       </div>
-      <div class="card glass table-card"><h3>Backup History</h3><div class="table-wrap"><table id="backupTable"></table></div></div>
+      <div class="card table-card"><h3>Backup History</h3><div class="table-wrap"><table id="backupTable"></table></div></div>
     </section>
 
-    <!-- SETTINGS -->
     <section class="content hidden" id="settingsPage" data-page-panel>
       <div class="settings-grid">
-        <div class="card glass settings-card">
+        <div class="card settings-card">
           <h3>General Settings</h3>
           <label>Currency
             <select id="currencySetting"><option value="BDT">BDT (৳)</option><option value="USD">USD ($)</option><option value="EUR">EUR (€)</option><option value="GBP">GBP (£)</option></select>
@@ -137,68 +183,79 @@
           </label>
           <button class="btn btn-primary" id="saveSettings">Save Settings</button>
         </div>
-        <div class="card glass settings-card">
+        <div class="card settings-card">
           <h3>Income Years</h3>
-          <div class="inline-form"><input id="newYear" type="text" placeholder="e.g. 2026-27"><button class="btn btn-primary" id="addYear">Add</button></div>
+          <p>Bangladesh fiscal year: 1 July to 30 June (e.g. <b>2025-26</b> = 1 Jul 2025 to 30 Jun 2026).</p>
+          <div class="inline-form"><input id="newYear" placeholder="e.g. 2026-27" aria-label="New income year"><button class="btn" id="addYear">Add</button></div>
           <div id="yearList" class="chip-list"></div>
         </div>
-        <div class="card glass settings-card">
+        <div class="card settings-card">
           <h3>Categories &amp; Subcategories</h3>
           <p>Manage the classification structure used by financial records.</p>
           <button class="btn" id="manageCategories">Manage Categories</button>
         </div>
-        <div class="card glass settings-card">
+        <div class="card settings-card">
           <h3>Excel Migration</h3>
-          <p>Import worksheets from Assets &amp; Liabilities.xlsx. Automatically maps all 15 sheets and fields.</p>
+          <p>Import worksheets from Assets &amp; Liabilities.xlsx. Each sheet's header row is detected automatically. The original workbook is never modified.</p>
           <input type="file" id="excelImport" accept=".xlsx,.xls" hidden>
-          <button class="btn btn-indigo" id="importExcel">Import Excel Workbook</button>
+          <button class="btn" id="importExcel">Import Excel Workbook</button>
+        </div>
+        <div class="card settings-card" id="installCard">
+          <h3>Mobile App</h3>
+          <p id="installHint">Install Personal Finance on your phone or desktop for a full-screen, offline-capable experience.</p>
+          <button class="btn btn-primary hidden" id="installBtnSettings"><svg class="ic" aria-hidden="true"><use href="#i-phone"/></svg><span>Install App</span></button>
+        </div>
+        <div class="card settings-card">
+          <h3>Local Storage</h3>
+          <p id="storageInfo">Calculating storage usage…</p>
+          <div class="storage-meter" aria-hidden="true"><span id="storageBar"></span></div>
+          <p class="hint">Records and PDFs live only in this browser. Keep a backup ZIP somewhere safe.</p>
+          <button class="btn btn-danger" id="deleteAllData">Delete All Local Data</button>
         </div>
       </div>
     </section>
   </main>
 
-  <!-- MOBILE BOTTOM NAV -->
-  <nav class="mobile-bottom-nav" aria-label="Mobile Navigation">
-    <button class="m-nav-item active" data-page="dashboard"><span aria-hidden="true">⌂</span><small>Home</small></button>
-    <button class="m-nav-item" data-page="records"><span aria-hidden="true">▦</span><small>Records</small></button>
-    <button class="m-nav-fab" id="mobileQuickAdd" aria-label="Add Record">＋</button>
-    <button class="m-nav-item" data-page="balance"><span aria-hidden="true">⚖</span><small>Balance</small></button>
-    <button class="m-nav-item" data-page="settings"><span aria-hidden="true">⚙</span><small>More</small></button>
+  <!-- Mobile bottom navigation -->
+  <nav class="bottom-nav" id="bottomNav" aria-label="Main (mobile)">
+    <span class="nav-pill" aria-hidden="true"></span>
+    <button class="bn-item active" data-page="dashboard"><svg class="ic" aria-hidden="true"><use href="#i-home"/></svg><span>Home</span></button>
+    <button class="bn-item" data-page="records"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg><span>Records</span></button>
+    <button class="bn-item" data-page="balance"><svg class="ic" aria-hidden="true"><use href="#i-scale"/></svg><span>Balance</span></button>
+    <button class="bn-item" data-page="backup"><svg class="ic" aria-hidden="true"><use href="#i-backup"/></svg><span>Backup</span></button>
+    <button class="bn-item" data-page="settings"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg><span>Settings</span></button>
   </nav>
 
-  <!-- RECORD MODAL -->
-  <dialog id="recordModal" class="modal">
+  <dialog id="recordModal" class="modal" aria-labelledby="recordModalTitle">
     <form id="recordForm" method="dialog">
-      <div class="modal-head">
-        <div><h2 id="recordModalTitle">Add Financial Record</h2><p id="recordModalSubtitle"></p></div>
-        <button type="button" class="close-btn" data-close-modal>×</button>
-      </div>
+      <div class="modal-head"><div><h2 id="recordModalTitle">Add Financial Record</h2><p id="recordModalSubtitle"></p></div><button type="button" class="close-btn" data-close-modal aria-label="Close">×</button></div>
       <div class="modal-body" id="recordFormFields"></div>
-      <div class="modal-foot">
-        <button type="button" class="btn" data-close-modal>Cancel</button>
-        <button type="submit" class="btn btn-primary">Save Record</button>
-      </div>
+      <div class="modal-foot"><button type="button" class="btn" data-close-modal>Cancel</button><button type="submit" class="btn btn-primary">Save Record</button></div>
     </form>
   </dialog>
 
-  <!-- PDF VIEWER MODAL -->
-  <dialog id="pdfViewerModal" class="modal modal-large">
-    <div class="modal-head">
-      <div><h2 id="pdfViewerTitle">Document Preview</h2><p id="pdfViewerMeta"></p></div>
-      <div class="modal-head-actions">
-        <a id="pdfViewerDownload" class="btn btn-primary" download="document.pdf">⬇ Download PDF</a>
-        <button type="button" class="btn" id="pdfViewerNewTab">↗ Open Tab</button>
-        <button type="button" class="close-btn" data-close-modal>×</button>
+  <dialog id="pdfViewerModal" class="modal modal-xl" aria-labelledby="pdfViewerTitle">
+    <div class="modal-head viewer-head">
+      <div class="viewer-title"><h2 id="pdfViewerTitle">Document</h2><p id="pdfViewerMeta"></p></div>
+      <div class="viewer-actions">
+        <button type="button" class="btn btn-primary" id="pdfDownloadBtn"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg><span>Download PDF</span></button>
+        <button type="button" class="btn" id="pdfNewTabBtn" title="Open in a new tab"><svg class="ic" aria-hidden="true"><use href="#i-external"/></svg><span>New tab</span></button>
+        <button type="button" class="close-btn" data-close-modal aria-label="Close viewer">×</button>
       </div>
     </div>
-    <div class="modal-body pdf-viewer-body">
-      <iframe id="pdfViewerFrame" title="PDF Document Preview"></iframe>
+    <div class="pdf-stage" id="pdfStage">
+      <div class="pdf-skeleton" id="pdfSkeleton"><div class="sk sk-line"></div><div class="sk sk-line short"></div><div class="sk sk-block"></div></div>
+      <iframe id="pdfFrame" title="PDF viewer"></iframe>
+      <div class="pdf-fallback hidden" id="pdfFallback">
+        <svg class="ic big" aria-hidden="true"><use href="#i-file"/></svg>
+        <p>This device or browser cannot show PDFs inline.</p>
+        <div><button type="button" class="btn btn-primary" id="pdfFallbackDownload">Download PDF</button> <button type="button" class="btn" id="pdfFallbackTab">Open in new tab</button></div>
+      </div>
     </div>
   </dialog>
 
-  <!-- CATEGORY MODAL -->
-  <dialog id="categoryModal" class="modal">
-    <div class="modal-head"><div><h2>Manage Categories</h2></div><button type="button" class="close-btn" data-close-modal>×</button></div>
+  <dialog id="categoryModal" class="modal" aria-labelledby="categoryModalTitle">
+    <div class="modal-head"><div><h2 id="categoryModalTitle">Manage Categories</h2></div><button type="button" class="close-btn" data-close-modal aria-label="Close">×</button></div>
     <div class="modal-body">
       <div class="category-editor">
         <form id="categoryForm">
@@ -212,26 +269,24 @@
     </div>
   </dialog>
 
-  <!-- CONFIRM MODAL -->
-  <dialog id="confirmModal" class="modal modal-small">
+  <dialog id="confirmModal" class="modal modal-small" aria-labelledby="confirmTitle">
     <div class="modal-head"><h2 id="confirmTitle">Confirm Action</h2></div>
     <div class="modal-body"><p id="confirmMessage"></p></div>
     <div class="modal-foot"><button class="btn" id="confirmCancel">Cancel</button><button class="btn btn-danger" id="confirmOk">Confirm</button></div>
   </dialog>
 
-  <!-- RESTORE MODAL -->
-  <dialog id="restoreModal" class="modal modal-small">
-    <div class="modal-head"><h2>Restore Backup</h2></div>
+  <dialog id="restoreModal" class="modal modal-small" aria-labelledby="restoreModalTitle">
+    <div class="modal-head"><h2 id="restoreModalTitle">Restore Backup</h2></div>
     <div class="modal-body">
       <p>Choose how to restore the selected backup.</p>
-      <label class="radio-row"><input type="radio" name="restoreMode" value="replace" checked> Replace existing data</label>
-      <label class="radio-row"><input type="radio" name="restoreMode" value="merge"> Merge data (preserve existing IDs)</label>
+      <label><input type="radio" name="restoreMode" value="replace" checked> Replace existing data</label>
+      <label><input type="radio" name="restoreMode" value="merge"> Merge data (preserve existing IDs)</label>
     </div>
     <div class="modal-foot"><button class="btn" data-close-modal>Cancel</button><button class="btn btn-primary" id="confirmRestore">Restore</button></div>
   </dialog>
 
-  <div id="toastRegion" class="toast-region"></div>
+  <div id="toastRegion" class="toast-region" aria-live="polite"></div>
   <input type="file" id="replaceDocumentFile" accept=".pdf,application/pdf" hidden>
-  <script src="app.js"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

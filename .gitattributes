@@ -1,0 +1,9 @@
+# Normalise line endings so commits only show real content changes.
+* text=auto eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.pdf binary
+*.xlsx binary
+*.zip binary
