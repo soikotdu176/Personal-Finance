@@ -35,7 +35,7 @@
     })();
   </script>
 
-  <link rel="stylesheet" href="styles.css?v=5">
+  <link rel="stylesheet" href="styles.css?v=12">
   <!-- Third-party libraries, pinned + Subresource Integrity so a compromised CDN cannot inject code -->
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" integrity="sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC" crossorigin="anonymous"></script>
@@ -48,6 +48,8 @@
   <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
     <defs>
       <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></symbol>
+      <symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
       <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
       <symbol id="i-scale" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M6 21h12M5 7h14M5 7l-3 7a3.2 3.2 0 0 0 6 0zM19 7l-3 7a3.2 3.2 0 0 0 6 0z"/></symbol>
       <symbol id="i-backup" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></symbol>
@@ -90,7 +92,7 @@
 
   <main class="main">
     <header class="topbar">
-      <button class="icon-btn menu-toggle" id="menuToggle" aria-label="Toggle menu"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg></button>
+      <button class="icon-btn menu-toggle" id="menuToggle" aria-label="Toggle menu" aria-controls="sidebar" aria-expanded="false"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button>
       <div class="title-block">
         <h1 id="pageTitle">Dashboard</h1>
         <p id="pageSubtitle">Financial overview</p>
@@ -103,6 +105,64 @@
     </header>
 
     <section class="content" id="dashboardPage" data-page-panel>
+      <section class="mobile-overview hidden" id="mobileOverview" aria-label="Mobile financial overview">
+        <div class="mobile-finance-header">
+          <div class="mobile-finance-toolbar">
+            <div class="mobile-profile-avatar" aria-label="SOIKOT RAIHAN">SR</div>
+            <button type="button" class="mobile-header-action" id="mobileQuickAction" aria-label="Open quick actions"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button>
+            <label class="mobile-period-picker"><span class="sr-only">Balance period</span><select id="mobilePeriodSelect" aria-label="Balance period"></select></label>
+            <button type="button" class="mobile-header-action" id="mobileChartsAction" aria-label="View analytics"><svg class="ic" aria-hidden="true"><use href="#i-up"/></svg></button>
+            <button type="button" class="mobile-header-action" id="mobileMoreAction" aria-label="Open navigation menu" aria-controls="sidebar" aria-expanded="false"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button>
+          </div>
+          <div class="mobile-year-bar">
+            <label class="mobile-year-picker">
+              <span class="mobile-year-caption">Financial Year</span>
+              <select id="mobileDashboardYear" aria-label="Financial Year"></select>
+            </label>
+            <span class="mobile-year-range" id="mobileDashboardYearRange"></span>
+          </div>
+          <div class="mobile-balance"><span>Net Balance</span><strong id="mobileNetBalance">৳0.00</strong></div>
+          <div class="mobile-period-strip" id="mobilePeriodStrip" aria-label="Choose a balance period"></div>
+        </div>
+        <div class="mobile-cashflow-cards">
+          <article class="mobile-cashflow-card income-card"><div><span>Income</span><svg class="ic" aria-hidden="true"><use href="#i-up"/></svg></div><strong id="mobileIncomeTotal">+৳0.00</strong></article>
+          <article class="mobile-cashflow-card expense-card"><div><span>Expenses</span><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg></div><strong id="mobileExpenseTotal">−৳0.00</strong></article>
+        </div>
+        <section class="mobile-transaction-section" aria-label="Daily transactions">
+          <div class="mobile-transaction-heading"><span>Recent activity</span><button type="button" id="mobileAllTransactions">View all</button></div>
+          <div id="mobileDailyTransactions"></div>
+        </section>
+      </section>
+      <section class="mobile-calendar-page hidden" id="mobileCalendarPage" aria-label="Financial year calendar">
+        <header class="mobile-calendar-header">
+          <div class="mobile-calendar-title-row">
+            <div><span class="mobile-calendar-eyebrow">Calendar</span><h2>Financial calendar</h2></div>
+            <button type="button" class="mobile-header-action" id="mobileCalendarMore" aria-label="Open navigation menu" aria-controls="sidebar" aria-expanded="false"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button>
+          </div>
+          <label class="mobile-calendar-year-field">Financial Year
+            <select id="mobileCalendarYear" aria-label="Financial Year"></select>
+          </label>
+        </header>
+        <div class="mobile-calendar-month-nav">
+          <button type="button" id="mobileCalendarPrev" aria-label="Previous month">‹</button>
+          <h3 id="mobileCalendarMonthTitle"></h3>
+          <button type="button" id="mobileCalendarNext" aria-label="Next month">›</button>
+        </div>
+        <div class="mobile-calendar-month-strip" id="mobileCalendarMonths" aria-label="Months in selected Financial Year"></div>
+        <div class="mobile-calendar-summary">
+          <article class="calendar-income"><span>Income</span><strong id="mobileCalendarIncome">৳0.00</strong></article>
+          <article class="calendar-expense"><span>Expenses</span><strong id="mobileCalendarExpenses">৳0.00</strong></article>
+          <article class="calendar-net"><span>Net Balance</span><strong id="mobileCalendarNet">৳0.00</strong></article>
+        </div>
+        <section class="mobile-calendar-grid-card" aria-label="Calendar days">
+          <div class="mobile-calendar-weekdays" aria-hidden="true"><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span></div>
+          <div class="mobile-calendar-grid" id="mobileCalendarGrid"></div>
+        </section>
+        <section class="mobile-calendar-transaction-section" aria-label="Transactions for selected month">
+          <div class="mobile-calendar-transaction-heading"><h3 id="mobileCalendarTransactionTitle"></h3><button type="button" id="mobileCalendarAllDays">All days</button></div>
+          <div id="mobileCalendarTransactions"></div>
+        </section>
+      </section>
       <div class="filters card" id="dashboardFilters"></div>
       <div class="cards-grid" id="summaryCards">
         <div class="summary-card skeleton-card"><div class="sk sk-icon"></div><div class="sk-lines"><div class="sk sk-line short"></div><div class="sk sk-line"></div></div></div>
@@ -149,6 +209,7 @@
         <select id="recordTypeFilter" aria-label="Filter by type"><option value="">All Types</option><option value="Asset">Assets</option><option value="Liability">Liabilities</option></select>
         <select id="recordCategoryFilter" aria-label="Filter by category"></select>
         <select id="recordSubcategoryFilter" aria-label="Filter by subcategory"></select>
+        <select class="mobile-record-year-filter" id="recordYearFilter" aria-label="Filter by Financial Year"><option value="">All Financial Years</option></select>
         <button class="btn" id="recordClearFilters" disabled>Clear Filters</button>
         <button class="btn btn-primary" id="addRecordBtn"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg><span>Add Record</span></button>
       </div>
@@ -262,11 +323,25 @@
     <span class="nav-pill" aria-hidden="true"></span>
     <button class="bn-item active" data-page="dashboard"><svg class="ic" aria-hidden="true"><use href="#i-home"/></svg><span>Home</span></button>
     <button class="bn-item" data-page="records"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg><span>Records</span></button>
+    <button class="bn-item calendar-tab" id="mobileCalendarNav" type="button" aria-label="Open Financial Year calendar"><svg class="ic" aria-hidden="true"><use href="#i-calendar"/></svg><span>Calendar</span></button>
     <button class="bn-item" data-page="incomeExpenses"><svg class="ic" aria-hidden="true"><use href="#i-up"/></svg><span>Cash Flow</span></button>
-    <button class="bn-item" data-page="balance"><svg class="ic" aria-hidden="true"><use href="#i-scale"/></svg><span>Balance</span></button>
-    <button class="bn-item" data-page="backup"><svg class="ic" aria-hidden="true"><use href="#i-backup"/></svg><span>Backup</span></button>
     <button class="bn-item" data-page="settings"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg><span>Settings</span></button>
   </nav>
+  <div class="mobile-speed-dial hidden" id="mobileSpeedDial">
+    <button type="button" class="mobile-speed-backdrop" id="mobileSpeedBackdrop" aria-label="Close quick actions" aria-hidden="true" inert></button>
+    <div class="mobile-speed-panel" id="mobileSpeedPanel" role="group" aria-label="Quick actions" aria-hidden="true" inert>
+      <button type="button" class="speed-action speed-settings" data-mobile-action="settings" style="--action-index:0"><span class="speed-action-icon">⚙</span><span>Settings</span></button>
+      <div class="mobile-shortcuts" id="mobileShortcuts"></div>
+      <div class="mobile-primary-actions">
+        <button type="button" class="speed-action speed-expense" data-mobile-action="Expense" style="--action-index:5"><span class="speed-action-icon">−</span><span>Expense</span></button>
+        <button type="button" class="speed-action speed-income" data-mobile-action="Income" style="--action-index:6"><span class="speed-action-icon">+</span><span>Income</span></button>
+        <button type="button" class="speed-transfer" data-mobile-action="transfer" aria-label="Transfer" style="--action-index:7">⇄</button>
+      </div>
+    </div>
+    <button type="button" class="mobile-speed-toggle" id="mobileSpeedToggle" aria-label="Open quick actions" aria-expanded="false">
+      <svg class="ic plus-mark" aria-hidden="true"><use href="#i-plus"/></svg><span class="close-mark" aria-hidden="true">×</span>
+    </button>
+  </div>
 
   <dialog id="recordModal" class="modal" aria-labelledby="recordModalTitle">
     <form id="recordForm" method="dialog">
@@ -361,6 +436,6 @@
 
   <div id="toastRegion" class="toast-region" aria-live="polite"></div>
   <input type="file" id="replaceDocumentFile" accept=".pdf,application/pdf" hidden>
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>
