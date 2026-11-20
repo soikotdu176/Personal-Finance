@@ -20,13 +20,17 @@ migration. It is git-ignored on purpose: it contains real financial records and 
 committed or deployed.
 
 ## Highlights
+- New "Income & Expenses" page: fiscal-year (Jul–Jun) + month filters, cascading Major Head → Category → Subcategory, Excel-style category summary, Excel/PDF exports, and a receipt-PDF attachment per transaction.
+- Dashboard now shows Total Income, Total Expenses and Net Cash Flow KPIs, "Income vs Expenses" and "Expenses by Major Head" charts, plus a "Recent Income & Expenses" widget.
+- Add/Edit transaction modal with cascading classification dropdowns derived from the master Income/Expense tree (editable in Settings → Categories & Subcategories).
+- Excel & Budge CSV migration: imports Assets & Liabilities.xlsx, Income & Expenses.xlsx, and `budge-*.csv`/`.xlsx` with smart category normalization and duplicate detection (`Imported X transactions (Skipped Y duplicates)`).
 - PDF badges in tables/lists, embedded PDF viewer (Download / New tab), staged View/Download/Replace/Remove in the Edit modal.
 - Add/Edit form adapts to Category + Subcategory (15 schemas mapped to `Assets & Liabilities.xlsx`).
 - Income Year filter auto-fills the Bangladesh fiscal year dates (1 Jul - 30 Jun).
 - Generate PDF Report (one category per page, auto portrait/landscape) and Excel Report (summary + per-category sheets with SUM formulas).
 - Excel import detects each sheet's header row; re-importing skips rows already imported (sheet + row).
 - Installable PWA with offline cache; Figma-style UI, dark mode, reduced-motion support.
-- Backup / restore (ZIP), including every attached PDF.
+- Backup / restore (ZIP), including every attached PDF and the income/expense transactions.
 
 ## Data safety
 - **A new release never deletes local data.** The old build wiped the database whenever its
@@ -72,4 +76,4 @@ git push --force origin main
   `git for-each-ref --format="%(refname)" refs/original | xargs -n1 git update-ref -d` then `git gc --prune=now`.
 
 ## Version
-App `2026-11-19-v4` · database schema `v2` · service worker `v4.0.0`.
+App `2026-11-20-v5` · database schema `v3` · service worker `v5.0.0`.

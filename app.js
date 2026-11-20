@@ -7,11 +7,11 @@
    ========================================================================== */
 
 const DB_NAME = 'AssetBookDB';
-const DB_VERSION = 2;                       // v2: PDF blobs split out of the documents store
-const APP_VERSION = '2026-11-19-v4';
+const DB_VERSION = 4;                       // v4: migration history batches (migrationId on imported rows)
+const APP_VERSION = '2026-11-20-v5';
 const DATA_VERSION_KEY = 'assetbook-data-version';
 let db;
-let state = { records: [], categories: [], documents: [], settings: {}, backupHistory: [] };
+let state = { records: [], categories: [], documents: [], settings: {}, backupHistory: [], incomeExpenses: [], incomeGroups: [], migrationHistory: [] };
 let charts = {};
 let editingRecordId = null;
 let savingRecord = false;
@@ -21,6 +21,12 @@ let dashboardPage = 1;
 let replacingDocumentId = null;
 let currentPage = 'dashboard';
 let deferredInstallPrompt = null;
+let editingIncomeId = null;
+let savingIncome = false;
+let incomePage = 1;
+let incomeTab = 'transactions';
+const incomeFilters = { search: '', year: '', month: '', type: '', majorHead: '', category: '', subcategory: '' };
+const incomeDocDraft = { existing: [], removed: new Set(), replaced: new Map(), added: [] };
 
 const defaultCategories = [
   {id:'c-cash',type:'Asset',name:'Cash',subcategories:['Savings Accounts','Cash in Hand']},
@@ -32,6 +38,56 @@ const defaultCategories = [
   {id:'c-bank-loan',type:'Liability',name:'Bank Loan',subcategories:['Bank Loan']},
   {id:'c-other-liabilities',type:'Liability',name:'Other Liabilities',subcategories:['Other Liabilities']}
 ];
+
+/* Master Income / Expense classification tree (mapped to "Income & Expenses.xlsx"). */
+const defaultIncomeGroups = [
+  {id:'ig-salary',type:'Income',majorHead:'Income From Salary (PGCL)',categories:[
+    {name:'Salary & Bonuses',subcategories:['Basic and Allowances','Incentive Bonus','Profit Bonus','LFA','Festival Bonus','Ex-gratia']}
+  ]},
+  {id:'ig-other-receive',type:'Income',majorHead:'Income From Other Receive (PGCL)',categories:[
+    {name:'Allowances & Other Receives',subcategories:['Lunch Subsidy','Leverage','TA+DA','Training Allowance','Honorarium','Previous Year Profit Bonus']}
+  ]},
+  {id:'ig-other-income',type:'Income',majorHead:'Other Income',categories:[
+    {name:'General Income',subcategories:['Bank Interest / Profit','Gift / Refund','Other Income']}
+  ]},
+  {id:'ig-food',type:'Expense',majorHead:'Expenses for Food, Clothing and Other Essentials',categories:[
+    {name:'Food',subcategories:['Grocery items','Snacks items','Dining/Eating Out','Mess']},
+    {name:'Clothing',subcategories:['Own','Spouse','Family','Offspring','Laundry']},
+    {name:'Personal Supplies',subcategories:['Own','Spouse','Offspring','Family']},
+    {name:'Medicine & Doctor',subcategories:['Own','Spouse','Offspring','Family']},
+    {name:'Pocket Money',subcategories:['Spouse','Offspring','Family']},
+    {name:'Contribution For Family',subcategories:['Regular']}
+  ]},
+  {id:'ig-accommodation',type:'Expense',majorHead:'Accommodation Expense',categories:[
+    {name:'Accommodation',subcategories:['Household Rent']}
+  ]},
+  {id:'ig-auto',type:'Expense',majorHead:'Auto and Transportation Expenses',categories:[
+    {name:'Fuel and Maintenance',subcategories:['Fuel and Maintenance']},
+    {name:'Other Transportation',subcategories:['Auto','Bus','Train','Others']}
+  ]},
+  {id:'ig-utility',type:'Expense',majorHead:'Household and Utility Expenses',categories:[
+    {name:'Utilities & Home Support',subcategories:['Electricity','Gas, Water, Sewer and Garbage','Phone, Internet, TV channels and Subscription','Home-Support Staff and Other Expenses']}
+  ]},
+  {id:'ig-education',type:'Expense',majorHead:'Education Expenses',categories:[
+    {name:'Education',subcategories:['Education Expenses']}
+  ]},
+  {id:'ig-festival',type:'Expense',majorHead:'Festival And Other Special Expenses',categories:[
+    {name:'Special & Events',subcategories:['Festival, Party, Events','Domestic and Overseas Tour, Holiday, Etc.','Philanthropy, Etc','Other Special Expenses']}
+  ]},
+  {id:'ig-misc',type:'Expense',majorHead:'Any Other Expenses',categories:[
+    {name:'Miscellaneous',subcategories:['Any Other Expenses']}
+  ]},
+  {id:'ig-tax',type:'Expense',majorHead:'Tax, Charges, Etc. Paid',categories:[
+    {name:'Tax & Surcharge',subcategories:['Payment of Tax at Source & Advance Tax','Payment of Tax, Surcharge or Other Amounts']}
+  ]},
+  {id:'ig-loss',type:'Expense',majorHead:'Loss, Deduction, Other Expense',categories:[
+    {name:'Special Contribution For Family',subcategories:['Small Amount','Big Amount','Spouse','Offspring']},
+    {name:'Office Purchase & Bill',subcategories:['Office Purchase','Bill Received','Personal Print']}
+  ]}
+];
+
+/* Payment methods offered by the Add / Edit form and recognised by imports. */
+const ACCOUNTS = ['Cash in Hand','bKash','Basic Bank Limited','Card','Other'];
 
 /* ---------- IndexedDB helpers ---------- */
 function openDB() {
@@ -46,6 +102,14 @@ function openDB() {
       if(!database.objectStoreNames.contains('backupHistory')) database.createObjectStore('backupHistory',{keyPath:'id'});
       // v2: PDF bytes get their own store, so loading document metadata stays cheap.
       if(!database.objectStoreNames.contains('documentBlobs')) database.createObjectStore('documentBlobs',{keyPath:'id'});
+      // v3: income & expense transactions and their editable classification tree.
+      if(!database.objectStoreNames.contains('incomeExpenses')){
+        const ie=database.createObjectStore('incomeExpenses',{keyPath:'id'});
+        ['date','incomeYear','type','majorHead','category','importHash'].forEach(k=>ie.createIndex(k,k,{unique:false}));
+      }
+      if(!database.objectStoreNames.contains('incomeGroups')) database.createObjectStore('incomeGroups',{keyPath:'id'});
+      // v4: migration batch metadata (Settings → Excel & Budge CSV Migration history).
+      if(!database.objectStoreNames.contains('migrationHistory')) database.createObjectStore('migrationHistory',{keyPath:'id'});
       if(event.oldVersion<2&&event.target.transaction) migrateDocumentBlobs(event.target.transaction);
     };
     request.onsuccess=()=>resolve(request.result);
@@ -111,6 +175,16 @@ function remove(store,key){
     const request=tx(store,'readwrite').delete(key);
     request.onsuccess=()=>resolve();
     request.onerror=()=>reject(request.error);
+  });
+}
+function removeMany(store,keys){
+  return new Promise((resolve,reject)=>{
+    const transaction=db.transaction(store,'readwrite');
+    const objectStore=transaction.objectStore(store);
+    (keys||[]).forEach(key=>objectStore.delete(key));
+    transaction.oncomplete=()=>resolve();
+    transaction.onerror=()=>reject(transaction.error);
+    transaction.onabort=()=>reject(transaction.error);
   });
 }
 function getOne(store,key){
@@ -356,7 +430,7 @@ async function checkDataVersion(){
   try{stored=localStorage.getItem(DATA_VERSION_KEY)}catch(e){}
   if(stored===APP_VERSION)return;
   let hasData=false;
-  try{hasData=(await getAll('records')).length>0||(await getAll('documents')).length>0}catch(e){}
+  try{hasData=(await getAll('records')).length>0||(await getAll('documents')).length>0||(await getAll('incomeExpenses')).length>0}catch(e){}
   try{localStorage.setItem(DATA_VERSION_KEY,APP_VERSION)}catch(e){}
   if(!hasData)return;
   toast('App updated. All saved records were kept - create a backup from Data Backup & Restore.');
@@ -417,7 +491,7 @@ function showFatal(error){
 async function init(){
   initTheme();
   // Self-heal: an old cached index.html without the new elements -> drop caches once and reload.
-  if(!document.getElementById('generatePdfReport')||!document.getElementById('pdfViewerModal')){
+  if(!document.getElementById('generatePdfReport')||!document.getElementById('pdfViewerModal')||!document.getElementById('incomeTrendChart')){
     if(!sessionStorage.getItem('assetbook-healed')){
       sessionStorage.setItem('assetbook-healed','1');
       await clearAppCaches();location.reload();return;
@@ -430,6 +504,10 @@ async function init(){
   const existingCategories=await getAll('categories');
   if(!existingCategories.length){
     for(const category of defaultCategories) await put('categories',category);
+  }
+  const existingGroups=await getAll('incomeGroups');
+  if(!existingGroups.length){
+    for(const group of defaultIncomeGroups) await put('incomeGroups',group);
   }
   await loadState();
   const settings=await getAll('settings');
@@ -453,6 +531,10 @@ async function loadState(){
   state.categories=await getAll('categories');
   state.documents=await getAll('documents');
   state.backupHistory=await getAll('backupHistory');
+  state.incomeExpenses=await getAll('incomeExpenses');
+  state.incomeGroups=await getAll('incomeGroups');
+  state.migrationHistory=await getAll('migrationHistory');
+  if(!state.incomeGroups.length){for(const group of defaultIncomeGroups) state.incomeGroups.push(group)}
 }
 
 function toast(message,error=false){
@@ -482,14 +564,14 @@ function initTheme(){
     try{localStorage.setItem('assetbook-theme',next)}catch(e){}
     const meta=document.getElementById('metaThemeColor');
     if(meta)meta.setAttribute('content',next==='dark'?'#0b1020':'#4f46e5');
-    if(db&&currentPage==='dashboard')renderCharts(getFilteredRecords());
+    if(db&&currentPage==='dashboard')renderCharts(dashboardBalanceRecords());
   };
 }
 
 /* ==========================================================================
    Navigation (sidebar + mobile bottom bar) with animated active pill
    ========================================================================== */
-const PAGE_TITLES={dashboard:['Dashboard','Financial overview'],records:['Assets & Liabilities','Manage financial records'],balance:['Balance Sheet','Consolidated financial position'],backup:['Data Backup & Restore','Portable data management'],settings:['Settings','Application preferences']};
+const PAGE_TITLES={dashboard:['Dashboard','Financial overview'],records:['Assets & Liabilities','Manage financial records'],incomeExpenses:['Income & Expenses','Track cash flow, income and spending'],balance:['Balance Sheet','Consolidated financial position'],backup:['Data Backup & Restore','Portable data management'],settings:['Settings','Application preferences']};
 
 function playEnter(panel){
   if(!panel)return;
@@ -538,6 +620,7 @@ function showPage(page){
   closeDrawer();
   if(page==='dashboard'){kpiPrev.length=0;renderDashboard()}
   if(page==='records')renderRecordSections();
+  if(page==='incomeExpenses')renderIncomePage();
   if(page==='balance')renderBalance();
   if(page==='backup')renderBackupHistory();
   if(page==='settings')renderSettings();
@@ -566,6 +649,15 @@ function bindGlobalActions(){
   $el('addRecordBtn').onclick=()=>openRecordModal();
   $el('recordSearch').oninput=debounce(renderRecordSections);
   $el('recordTypeFilter').onchange=renderRecordSections;
+  $el('recordCategoryFilter').onchange=renderRecordSections;
+  $el('recordSubcategoryFilter').onchange=renderRecordSections;
+  $el('recordClearFilters').onclick=()=>{
+    const search=$el('recordSearch');if(search)search.value='';
+    const type=$el('recordTypeFilter');if(type)type.value='';
+    const category=$el('recordCategoryFilter');if(category)category.value='';
+    const subcategory=$el('recordSubcategoryFilter');if(subcategory)subcategory.value='';
+    renderRecordSections();
+  };
   $el('dashboardSearch').oninput=debounce(()=>{dashboardPage=1;renderDashboardTable()});
   $el('exportFiltered').onclick=exportFilteredExcel;
   $el('printDashboard').onclick=()=>window.print();
@@ -574,6 +666,7 @@ function bindGlobalActions(){
   $el('printBalance').onclick=()=>window.print();
   $el('exportBalanceExcel').onclick=exportBalanceExcel;
   $el('balanceYear').onchange=e=>{balanceYear=e.target.value;balanceYearChosen=true;renderBalance()};
+  $el('balanceClear').onclick=()=>{balanceYear='';balanceYearChosen=true;renderBalance()};
   document.querySelectorAll('[data-close-modal]').forEach(button=>{
     button.onclick=()=>button.closest('dialog').close();
   });
@@ -581,6 +674,26 @@ function bindGlobalActions(){
   $el('confirmOk').onclick=()=>{$el('confirmModal').close();if(confirmAction){const resolve=confirmAction;confirmAction=null;resolve(true)}};
   $el('confirmModal').addEventListener('cancel',()=>{if(confirmAction){const resolve=confirmAction;confirmAction=null;resolve(false)}});
   $el('recordForm').onsubmit=saveRecord;
+  $el('incomeForm').onsubmit=saveIncomeRecord;
+  $el('addIncomeBtn').onclick=()=>openIncomeModal();
+  $el('exportIncomeExcel').onclick=e=>runWithLoading(e.currentTarget,exportIncomeExcel);
+  $el('exportIncomePdf').onclick=e=>runWithLoading(e.currentTarget,exportIncomePdf);
+  $el('goIncomePage').onclick=()=>showPage('incomeExpenses');
+  const incomeTabs=$el('incomeTabs');
+  if(incomeTabs)incomeTabs.onclick=e=>{
+    const tab=e.target.closest('[data-income-tab]');if(!tab)return;
+    incomeTab=tab.dataset.incomeTab;
+    incomeTabs.querySelectorAll('[data-income-tab]').forEach(t=>{t.classList.toggle('active',t===tab);t.setAttribute('aria-selected',t===tab?'true':'false')});
+    renderIncomeView();
+  };
+  const categoryType=$el('categoryType');
+  if(categoryType)categoryType.onchange=()=>{renderCategoryMajorHeads();renderCategoryFormFields();renderCategoryNameOptions();renderCategoryTree()};
+  const majorHeadSel=$el('categoryMajorHead');
+  if(majorHeadSel)majorHeadSel.onchange=()=>{const isNew=majorHeadSel.value==='__new__';$el('newMajorHeadField').classList.toggle('hidden',!isNew);renderCategoryNameOptions();renderCategoryTree()};
+  $el('categoryName').onchange=renderCategoryTree;
+  $el('showNewCategory').onclick=()=>{$el('newCategoryRow').classList.remove('hidden');$el('newCategoryName').focus()};
+  $el('cancelNewCategory').onclick=()=>{$el('newCategoryRow').classList.add('hidden');$el('newCategoryName').value=''};
+  $el('saveNewCategory').onclick=saveNewCategory;
   $el('replaceDocumentFile').onchange=replaceDocumentFile;
   $el('createBackup').onclick=createBackup;
   $el('restoreBackup').onclick=()=>$el('restoreFile').click();
@@ -592,6 +705,9 @@ function bindGlobalActions(){
   $el('categoryForm').onsubmit=addCategory;
   $el('importExcel').onclick=()=>$el('excelImport').click();
   $el('excelImport').onchange=importExcel;
+  $el('migrationChooseFile').onclick=()=>$el('migrationReplaceFile').click();
+  $el('migrationReplaceFile').onchange=replaceMigrationFile;
+  $el('migrationEditModal').addEventListener('close',()=>{replaceMigrationId=null});
   const wipe=$el('deleteAllData');
   if(wipe)wipe.onclick=deleteAllLocalData;
   bindPdfViewer();
@@ -607,7 +723,7 @@ function bindDelegatedActions(){
   document.addEventListener('click',async event=>{
     const trigger=event.target.closest('[data-cmd]');
     if(!trigger)return;
-    const command=trigger.dataset.cmd,id=trigger.dataset.id||'',name=trigger.dataset.name||'';
+    const command=trigger.dataset.cmd,id=trigger.dataset.id||'',name=trigger.dataset.name||'',cat=trigger.dataset.cat||'',store=trigger.dataset.store||'',mig=trigger.dataset.mig||'';
     switch(command){
       case 'view-record': viewRecord(id); break;
       case 'edit-record': openRecordModal(id); break;
@@ -620,6 +736,19 @@ function bindDelegatedActions(){
       case 'delete-category': await deleteCategory(id); break;
       case 'delete-year': await deleteIncomeYear(id); break;
       case 'page': dashboardPage=Number(id)||1; renderDashboardTable(); break;
+      case 'edit-income': openIncomeModal(id); break;
+      case 'delete-income': await deleteIncomeRecord(id); break;
+      case 'view-income': viewIncomeRecord(id); break;
+      case 'income-page': incomePage=Number(id)||1; renderIncomeTable(); break;
+      case 'rename-income-group': await renameIncomeGroup(id); break;
+      case 'delete-income-group': await deleteIncomeGroup(id); break;
+      case 'rename-income-category': await renameIncomeCategory(id,name); break;
+      case 'delete-income-category': await deleteIncomeCategory(id,name); break;
+      case 'rename-income-subcategory': await renameIncomeSubcategory(id,cat,name); break;
+      case 'delete-income-subcategory': await deleteIncomeSubcategory(id,cat,name); break;
+      case 'edit-migration': editMigration(id); break;
+      case 'delete-migration': await deleteMigration(id); break;
+      case 'remove-migration-row': await removeMigrationRow(mig,store,id); break;
     }
   });
 }
@@ -636,6 +765,7 @@ function renderAll(){
   renderDashboardFilters();
   renderDashboard();
   renderRecordSections();
+  renderIncomePage();
   renderSettings();
   renderBackupHistory();
   renderBalance();
@@ -671,6 +801,70 @@ function recordAmount(record){
   }
   return 0;
 }
+
+/* ==========================================================================
+   Income-year balance logic
+   - Non-cash assets and Liabilities carry forward: a record counts up to the
+     selected Income Year, accumulating from all previous years (sum of records
+     whose income year is <= the selected year).
+   - Cash is a snapshot: only its latest value is shown, latest per item as of the
+     selected Income Year's end (so a newer balance outside that year is ignored),
+     then the latest balances of different items are added together.
+   ========================================================================== */
+/** Cash & Bank = an Asset whose category is "Cash" (Savings Accounts / Cash in Hand). The label is
+ *  also recognised as "Cash & Bank" / "Cash and Bank" so a renamed category keeps snapshot semantics. */
+const isCashRecord=r=>!!r&&r.type==='Asset'&&/^(cash|cash\s*&\s*bank|cash\s+and\s+bank)$/i.test(String(r.category||'').trim());
+/** Start year of a fiscal label so '2024-25' < '2025-26' orders correctly. */
+function fiscalStartOf(year){
+  const p=parseIncomeYear(year);
+  return p?p.start:null;
+}
+/** Whether a non-cash record is carried forward into `year` ('' = all years). */
+function carriesIntoYear(r,year){
+  if(!year)return true;
+  const ys=fiscalStartOf(year);
+  if(ys===null)return true;
+  const rs=fiscalStartOf(r.incomeYear);
+  if(rs===null)return true;            // legacy record without an income year: keep it
+  return rs<=ys;
+}
+/** Normalized "as of" date for a cash snapshot. Parses any stored date format (ISO, DD-MM-YYYY,
+ *  Excel serial, JS Date) into ISO via normalizeExcelDate, and falls back to the end of the record's
+ *  Income Year only when the Date is genuinely missing/invalid — so the snapshot is always compared
+ *  correctly against financial-year boundaries. */
+function cashEffectiveDate(r){
+  const iso=normalizeExcelDate(r.date);
+  if(iso)return iso;
+  const range=fiscalRange(r.incomeYear);
+  return range?range.to:'';
+}
+/** Cash keeps one value per item (subcategory + particulars + account detail); the most recent
+ *  record wins. For a selected Income Year, only snapshots dated on/before that year's end count,
+ *  so the shown value is the latest one *as of* that year — a newer balance outside the year is
+ *  ignored (e.g. 28-06-2023 = 3000 stays 3000 for 2022-23 even when a later 5000 exists). */
+function latestCashRecords(records, year){
+  const range=year?fiscalRange(year):null;
+  const cutoff=range?range.to:null;
+  const latest=new Map();
+  for(const r of records){
+    const eff=cashEffectiveDate(r);
+    if(cutoff&&eff&&eff>cutoff)continue;   // snapshot is newer than this financial year
+    const key=[r.subcategory,r.particulars,r.accountDetail].map(v=>String(v??'').trim()).join('::');
+    const prev=latest.get(key);
+    if(!prev){latest.set(key,r);continue}
+    const prevEff=cashEffectiveDate(prev);
+    const newer=eff>prevEff||(eff===prevEff&&String(r.updatedAt||'')>String(prev.updatedAt||''));
+    if(newer)latest.set(key,r);
+  }
+  return [...latest.values()];
+}
+/** Reduce a record set to its effective balance records for `year`. */
+function effectiveRecordsForBalance(records,year){
+  const cash=latestCashRecords(records.filter(isCashRecord), year);
+  const carried=records.filter(r=>!isCashRecord(r)&&carriesIntoYear(r,year));
+  return [...carried,...cash];
+}
+const sumAmount=records=>records.reduce((s,r)=>s+recordAmount(r),0);
 
 /* ==========================================================================
    Dashboard filters (with automatic Bangladesh fiscal-year dates)
@@ -714,7 +908,7 @@ function renderDashboardFilters(){
     <select id="dashYear" aria-label="Income year">${option('','All Income Years',!dashFilters.year)}${years.map(y=>option(y,y,dashFilters.year===y)).join('')}</select>
     <label class="date-field">Start Date<input id="dashDateFrom" type="date" value="${esc(dashFilters.from)}"></label>
     <label class="date-field">End Date<input id="dashDateTo" type="date" value="${esc(dashFilters.to)}"></label>
-    ${anyFilter?'<button type="button" class="btn filter-reset" id="dashReset">Reset filters</button>':''}
+    <button type="button" class="btn filter-reset" id="dashReset" ${anyFilter?'':'disabled'}>Clear Filters</button>
     ${hint}
   </div>`;
 
@@ -740,33 +934,35 @@ function renderDashboardFilters(){
 const inRange=(date,from,to)=>(!from||date>=from)&&(!to||date<=to);
 
 /**
- * Filtering rules
- *  - Income Year: matches the record's incomeYear ('2025-26' == '2025-2026'). Records that have no
- *    incomeYear but a date inside the fiscal year also match.
- *  - Date range: while the dates are the ones auto-filled from the Income Year, the Income Year is the
- *    source of truth, so dateless records (and records whose date sits slightly outside the window) stay in.
- *    As soon as the user edits a date manually, the range is enforced as well (dateless records drop out).
+ * Filtering rules (Financial Records table, PDF & Excel reports)
+ *  - Income Year: non-cash assets and Liabilities carry forward - every record up to and
+ *    including the selected year stays in (accumulated from previous years). Cash is a
+ *    snapshot and keeps only its latest value per item.
+ *  - Date range: only enforced when the user edits a date manually (datesAuto is off); a year
+ *    selection auto-fills the range, and the Income Year is then the source of truth.
  */
 function getFilteredRecords(){
-  const {type,category,subcategory,year,from,to,datesAuto}=dashFilters;
-  const yearNorm=year?normIncomeYear(year):'';
-  const fy=year?fiscalRange(year):null;
+  const {year,from,to,datesAuto}=dashFilters;
+  let records=effectiveRecordsForBalance(dashboardBaseRecords(),year);
+  if(!datesAuto&&(from||to)){
+    records=records.filter(r=>r.date&&inRange(r.date,from,to));
+  }
+  return records;
+}
+
+/** Records after the type / category / subcategory filters (no year or date handling). */
+function dashboardBaseRecords(){
+  const {type,category,subcategory}=dashFilters;
   return state.records.filter(r=>{
     if(type&&r.type!==type)return false;
     if(category&&r.category!==category)return false;
     if(subcategory&&r.subcategory!==subcategory)return false;
-    if(year){
-      const ry=r.incomeYear?normIncomeYear(r.incomeYear):'';
-      const match=ry?ry===yearNorm:!!(r.date&&fy&&inRange(r.date,fy.from,fy.to));
-      if(!match)return false;
-      if(datesAuto)return true;
-    }
-    if(from||to){
-      if(!r.date)return false;
-      if(!inRange(r.date,from,to))return false;
-    }
     return true;
   });
+}
+/** Dashboard aggregate records: carry-forward + cash last value for the selected Income Year. */
+function dashboardBalanceRecords(){
+  return effectiveRecordsForBalance(dashboardBaseRecords(),dashFilters.year);
 }
 
 /* ==========================================================================
@@ -774,20 +970,27 @@ function getFilteredRecords(){
    ========================================================================== */
 const kpiPrev=[];
 function renderDashboard(){
-  const records=getFilteredRecords();
-  const assets=records.filter(r=>r.type==='Asset').reduce((sum,r)=>sum+recordAmount(r),0);
-  const liabilities=records.filter(r=>r.type==='Liability').reduce((sum,r)=>sum+recordAmount(r),0);
-  const assetCategories=new Set(records.filter(r=>r.type==='Asset').map(r=>r.category)).size;
-  const liabilityCategories=new Set(records.filter(r=>r.type==='Liability').map(r=>r.category)).size;
-  const documentCount=new Set(records.flatMap(r=>r.documentIds||[])).size;
+  const balance=dashboardBalanceRecords();
+  const assets=sumAmount(balance.filter(r=>r.type==='Asset'));
+  const liabilities=sumAmount(balance.filter(r=>r.type==='Liability'));
+  const assetCategories=new Set(balance.filter(r=>r.type==='Asset').map(r=>r.category)).size;
+  const liabilityCategories=new Set(balance.filter(r=>r.type==='Liability').map(r=>r.category)).size;
+  const documentCount=new Set(balance.flatMap(r=>r.documentIds||[])).size;
+  const incomeRecords=dashboardIncomeExpenses();
+  const totalIncome=incomeRecords.filter(r=>r.type==='Income').reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const totalExpenses=incomeRecords.filter(r=>r.type==='Expense').reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const netCash=totalIncome-totalExpenses;
   const cards=[
     ['up','Total Assets',assets,'money'],['down','Total Liabilities',liabilities,'money'],['scale','Net Worth',assets-liabilities,'money'],
-    ['layers','Asset Categories',assetCategories,'int'],['layers','Liability Categories',liabilityCategories,'int'],['file','PDF Documents',documentCount,'int']
+    ['layers','Asset Categories',assetCategories,'int'],['layers','Liability Categories',liabilityCategories,'int'],['file','PDF Documents',documentCount,'int'],
+    ['up','Total Income',totalIncome,'money'],['down','Total Expenses',totalExpenses,'money'],['scale','Net Cash Flow',netCash,'money',netCash>=0?'kpi-pos':'kpi-neg']
   ];
-  document.getElementById('summaryCards').innerHTML=cards.map((c,i)=>`<div class="summary-card" style="--i:${i}"><div class="summary-icon">${icon(c[0])}</div><div><p>${c[1]}</p><strong class="kpi-value" data-kind="${c[3]}" data-to="${c[2]}">${c[3]==='money'?formatMoney(c[2]):c[2]}</strong></div></div>`).join('');
+  document.getElementById('summaryCards').innerHTML=cards.map((c,i)=>`<div class="summary-card" style="--i:${i}"><div class="summary-icon">${icon(c[0])}</div><div><p>${c[1]}</p><strong class="kpi-value ${c[4]||''}" data-kind="${c[3]}" data-to="${c[2]}">${c[3]==='money'?formatMoney(c[2]):c[2]}</strong></div></div>`).join('');
   animateKpis();
   document.querySelectorAll('.chart-card').forEach((el,i)=>{el.style.setProperty('--i',i);restartAnimation(el)});
-  renderCharts(records);
+  renderCharts(balance);
+  renderIncomeCharts(incomeRecords);
+  renderRecentIncome(incomeRecords);
   renderDashboardTable();
 }
 
@@ -824,8 +1027,8 @@ const CHART_COLORS=['#6366f1','#10b981','#f59e0b','#0ea5e9','#ec4899','#8b5cf6',
 const LIABILITY_COLORS=['#f43f5e','#fb923c','#a78bfa','#38bdf8','#facc15'];
 
 function renderCharts(records){
-  const assets=records.filter(r=>r.type==='Asset').reduce((sum,r)=>sum+recordAmount(r),0);
-  const liabilities=records.filter(r=>r.type==='Liability').reduce((sum,r)=>sum+recordAmount(r),0);
+  const assets=sumAmount(records.filter(r=>r.type==='Asset'));
+  const liabilities=sumAmount(records.filter(r=>r.type==='Liability'));
   destroyChart('comparisonChart');destroyChart('assetsChart');destroyChart('liabilitiesChart');destroyChart('netWorthChart');
   if(!window.Chart)return;
   const theme=chartTheme();
@@ -840,8 +1043,12 @@ function renderCharts(records){
   const assetsGroup=group('Asset'),liabilitiesGroup=group('Liability');
   charts.assetsChart=new Chart(document.getElementById('assetsChart'),{type:'bar',data:{labels:assetsGroup.map(x=>x[0]),datasets:[{data:assetsGroup.map(x=>x[1]),backgroundColor:assetsGroup.map((x,i)=>CHART_COLORS[i%CHART_COLORS.length]),borderRadius:8,maxBarThickness:42}]},options:{maintainAspectRatio:false,animation:anim,scales,plugins:{legend:{display:false}}}});
   charts.liabilitiesChart=new Chart(document.getElementById('liabilitiesChart'),{type:'pie',data:{labels:liabilitiesGroup.map(x=>x[0]),datasets:[{data:liabilitiesGroup.map(x=>x[1]),backgroundColor:LIABILITY_COLORS,borderWidth:0}]},options:{maintainAspectRatio:false,animation:anim,plugins:{legend}}});
-  const byYear=[...new Set(records.map(r=>normIncomeYear(r.incomeYear||'')).filter(Boolean))].sort();
-  const trend=byYear.map(year=>{const yearRecords=records.filter(r=>normIncomeYear(r.incomeYear||'')===year);const a=yearRecords.filter(r=>r.type==='Asset').reduce((s,r)=>s+recordAmount(r),0);const l=yearRecords.filter(r=>r.type==='Liability').reduce((s,r)=>s+recordAmount(r),0);return a-l});
+  const trendSource=dashboardBaseRecords();
+  const byYear=[...new Set(trendSource.map(r=>normIncomeYear(r.incomeYear||'')).filter(Boolean))].sort();
+  const trend=byYear.map(year=>{
+    const recs=effectiveRecordsForBalance(trendSource,year);
+    return sumAmount(recs.filter(r=>r.type==='Asset'))-sumAmount(recs.filter(r=>r.type==='Liability'));
+  });
   charts.netWorthChart=new Chart(document.getElementById('netWorthChart'),{type:'line',data:{labels:byYear,datasets:[{label:'Net Worth',data:trend,borderColor:'#6366f1',backgroundColor:'rgba(99,102,241,.16)',fill:true,tension:.38,pointRadius:4,pointBackgroundColor:'#6366f1',borderWidth:2.5}]},options:{maintainAspectRatio:false,animation:anim,scales,plugins:{legend:{display:false}}}});
 }
 
@@ -1031,6 +1238,8 @@ function bindDocManager(){
     const bad=files.filter(f=>!isPdfFile(f));
     docDraft.added.push(...files.filter(isPdfFile));
     if(bad.length)toast('Only PDF files can be attached.',true);
+    const total=docDraft.added.reduce((sum,f)=>sum+(f.size||0),0);
+    if(total>30*1024*1024)toast('Attached PDFs total over 30 MB — browser storage may be exceeded.',true);
     event.target.value='';
     renderDocManager();
   };
@@ -1050,6 +1259,12 @@ async function replaceDocumentFile(event){
     docDraft.replaced.set(targetId,file);
     docDraft.removed.delete(targetId);
     renderDocManager();
+    return;
+  }
+  if(document.getElementById('incomeModal').open&&incomeDocDraft.existing.some(d=>d.id===targetId)){
+    incomeDocDraft.replaced.set(targetId,file);
+    incomeDocDraft.removed.delete(targetId);
+    renderIncomeDocManager();
     return;
   }
   const documentRecord=state.documents.find(d=>d.id===targetId);
@@ -1256,6 +1471,11 @@ async function saveRecord(event){
   editingRecordId=null;
   renderAll();
   toast(isNew?'Record created successfully':'Record saved successfully');
+  }catch(error){
+    console.error(error);
+    const quota=error&&error.name==='QuotaExceededError';
+    const detail=error&&error.message?` — ${error.message}`:'';
+    toast(quota?'Could not save — browser storage is full. Delete some data or attach a smaller PDF.':`Could not save the record${detail}`,true);
   }finally{
     savingRecord=false;
   }
@@ -1313,11 +1533,38 @@ function viewRecord(id){
 /* ==========================================================================
    Records page & balance sheet
    ========================================================================== */
+function renderRecordFilters(){
+  const typeSelect=document.getElementById('recordTypeFilter');
+  const categorySelect=document.getElementById('recordCategoryFilter');
+  const subcategorySelect=document.getElementById('recordSubcategoryFilter');
+  const clearBtn=document.getElementById('recordClearFilters');
+  if(!categorySelect||!subcategorySelect)return;
+  const type=typeSelect?.value||'';
+  const option=(value,label,selected)=>`<option value="${esc(value)}" ${selected?'selected':''}>${esc(label)}</option>`;
+  const categories=dashCategoryNames(type);
+  if(!categories.includes(categorySelect.value))categorySelect.value='';
+  categorySelect.disabled=categories.length===0;
+  categorySelect.innerHTML=option('',type?`All ${type} Categories`:'All Categories',!categorySelect.value)+categories.map(c=>option(c,c,categorySelect.value===c)).join('');
+  const subcategories=dashSubcategoryNames(type,categorySelect.value);
+  if(!subcategories.includes(subcategorySelect.value))subcategorySelect.value='';
+  subcategorySelect.disabled=subcategories.length===0;
+  subcategorySelect.innerHTML=option('','All Subcategories',!subcategorySelect.value)+subcategories.map(s=>option(s,s,subcategorySelect.value===s)).join('');
+  if(clearBtn){
+    const active=!!((typeSelect?.value||'')||categorySelect.value||subcategorySelect.value||(document.getElementById('recordSearch')?.value||'').trim());
+    clearBtn.disabled=!active;
+  }
+}
+
 function renderRecordSections(){
+  renderRecordFilters();
   const search=(document.getElementById('recordSearch')?.value||'').toLowerCase();
   const type=document.getElementById('recordTypeFilter')?.value||'';
+  const category=document.getElementById('recordCategoryFilter')?.value||'';
+  const subcategory=document.getElementById('recordSubcategoryFilter')?.value||'';
   let records=state.records.filter(r=>!search||Object.values(r).some(v=>String(v).toLowerCase().includes(search)));
   if(type)records=records.filter(r=>r.type===type);
+  if(category)records=records.filter(r=>r.category===category);
+  if(subcategory)records=records.filter(r=>r.subcategory===subcategory);
   records.sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
   const render=(items)=>items.map((r,i)=>{
     const meta=recordMeta(r);
@@ -1354,7 +1601,8 @@ function orderedCategories(type){
 }
 /** Category -> Subcategory structure of the balance sheet for one Income Year. */
 function buildBalanceData(year){
-  const records=state.records.filter(r=>(r.type==='Asset'||r.type==='Liability')&&recordMatchesYear(r,year));
+  const source=state.records.filter(r=>r.type==='Asset'||r.type==='Liability');
+  const records=effectiveRecordsForBalance(source,year);
   const section=type=>{
     const cats=orderedCategories(type).map(c=>{
       const recs=records.filter(r=>r.type===type&&r.category===c.name);
@@ -1381,6 +1629,8 @@ function renderBalance(){
   if(balanceYear&&!years.includes(balanceYear))balanceYear='';
   yearSelect.innerHTML=`<option value="">All Income Years</option>${years.map(y=>`<option value="${esc(y)}" ${y===balanceYear?'selected':''}>${esc(y)}</option>`).join('')}`;
   yearSelect.value=balanceYear;
+  const clearBtn=document.getElementById('balanceClear');
+  if(clearBtn)clearBtn.disabled=!balanceYear;
   const data=buildBalanceData(balanceYear);
   const range=balanceYear?fiscalRange(balanceYear):null;
   const section=(title,sec)=>{
@@ -1396,31 +1646,104 @@ function renderBalance(){
 
 function openCategoryModal(){
   document.getElementById('categoryModal').showModal();
+  renderCategoryMajorHeads();
+  renderCategoryFormFields();
+  renderCategoryNameOptions();
   renderCategoryTree();
 }
+function renderCategoryNameOptions(){
+  const type=document.getElementById('categoryType').value;
+  const majorHead=document.getElementById('categoryMajorHead').value;
+  const selected=document.getElementById('categoryName').value;
+  const names=[];
+  state.categories.filter(c=>!type||c.type===type).forEach(c=>names.push(c.name));
+  state.incomeGroups.filter(g=>(!type||g.type===type)&&
+    (!(type==='Income'||type==='Expense')||majorHead==='__new__'||!majorHead||g.majorHead===majorHead))
+    .forEach(g=>(g.categories||[]).forEach(c=>names.push(c.name)));
+  const unique=[...new Set(names)].sort((a,b)=>a.localeCompare(b));
+  const select=document.getElementById('categoryName');
+  select.innerHTML=`<option value="">All Categories</option>${unique.map(name=>`<option value="${esc(name)}">${esc(name)}</option>`).join('')}`;
+  select.value=unique.includes(selected)?selected:'';
+}
 function renderCategoryTree(){
-  const tree=state.categories.map(c=>{
+  renderCategoryNameOptions();
+  const type=document.getElementById('categoryType').value;
+  const selectedCategory=document.getElementById('categoryName').value;
+  const majorHead=document.getElementById('categoryMajorHead').value;
+  const tree=state.categories.filter(c=>(!type||c.type===type)&&(!selectedCategory||c.name===selectedCategory)).map(c=>{
     const id=esc(c.id);
     const subs=c.subcategories.map(s=>`<span>${esc(s)} <button type="button" class="action-link" data-cmd="rename-subcategory" data-id="${id}" data-name="${esc(s)}">Edit</button> <button type="button" class="action-link danger" data-cmd="delete-subcategory" data-id="${id}" data-name="${esc(s)}" aria-label="Delete subcategory ${esc(s)}">×</button></span>`).join('');
     return `<div class="category-group"><strong>${esc(c.type)} · ${esc(c.name)} <button type="button" class="action-link" data-cmd="rename-category" data-id="${id}">Edit</button></strong>${subs}<button type="button" class="action-link danger" data-cmd="delete-category" data-id="${id}">Delete Category</button></div>`;
   }).join('');
-  document.getElementById('categoryTree').innerHTML=tree;
+  const incomeTree=state.incomeGroups.filter(g=>(!type||g.type===type)&&
+    (!(type==='Income'||type==='Expense')||majorHead==='__new__'||!majorHead||g.majorHead===majorHead)).map(g=>{
+    const gid=esc(g.id);
+    const cats=(g.categories||[]).filter(cat=>!selectedCategory||cat.name===selectedCategory).map(cat=>{
+      const cname=esc(cat.name);
+      const subs=(cat.subcategories||[]).map(s=>`<span>${esc(s)} <button type="button" class="action-link" data-cmd="rename-income-subcategory" data-id="${gid}" data-cat="${cname}" data-name="${esc(s)}">Edit</button> <button type="button" class="action-link danger" data-cmd="delete-income-subcategory" data-id="${gid}" data-cat="${cname}" data-name="${esc(s)}" aria-label="Delete subcategory ${esc(s)}">×</button></span>`).join('');
+      return `<div class="category-group"><strong>${esc(cat.name)} <button type="button" class="action-link" data-cmd="rename-income-category" data-id="${gid}" data-name="${cname}">Edit</button></strong>${subs}<button type="button" class="action-link danger" data-cmd="delete-income-category" data-id="${gid}" data-name="${cname}">Delete Category</button></div>`;
+    }).join('');
+    if(!cats)return '';
+    return `<div class="category-group income-group"><strong>${esc(g.type)} · ${esc(g.majorHead)} <button type="button" class="action-link" data-cmd="rename-income-group" data-id="${gid}">Edit</button></strong>${cats}<button type="button" class="action-link danger" data-cmd="delete-income-group" data-id="${gid}">Delete Major Head</button></div>`;
+  }).join('');
+  document.getElementById('categoryTree').innerHTML=tree+(incomeTree?`<div class="cat-section-title">Income &amp; Expenses</div>`+incomeTree:'')||'<p class="hint">No categories match these filters.</p>';
 }
 async function addCategory(event){
   event.preventDefault();
   const type=document.getElementById('categoryType').value;
   const name=document.getElementById('categoryName').value.trim();
   const subcategory=document.getElementById('subcategoryName').value.trim();
-  if(!name||!subcategory){toast('Enter both a category and a subcategory name.',true);return}
+  if(!type){toast('Select a financial type before adding a subcategory.',true);return}
+  if(!name){toast('Select a category or use + Add to create one first.',true);return}
+  if(type==='Income'||type==='Expense'){
+    await addIncomeGroupCategory(type,name,subcategory);
+    return;
+  }
+  if(!subcategory){toast('Enter a subcategory name.',true);return}
   let category=state.categories.find(c=>c.type===type&&c.name===name);
   if(category){
     if(!category.subcategories.includes(subcategory))category.subcategories.push(subcategory);
-  }else{
-    category={id:uid('category'),type,name,subcategories:[subcategory]};
   }
-  await put('categories',category);await loadState();
-  document.getElementById('categoryForm').reset();
-  renderCategoryTree();renderDashboardFilters();renderAll();toast('Category structure updated');
+  if(category)await put('categories',category);
+  else{toast('Create the category first using + Add.',true);return}
+  await loadState();
+  document.getElementById('subcategoryName').value='';
+  renderCategoryNameOptions();renderCategoryTree();renderDashboardFilters();renderAll();toast('Category structure updated');
+}
+async function saveNewCategory(){
+  const type=document.getElementById('categoryType').value;
+  const name=document.getElementById('newCategoryName').value.trim();
+  let selectedName=name;
+  let selectedMajorHead='';
+  if(!type){toast('Select a financial type before adding a category.',true);return}
+  if(!name){toast('Enter a category name.',true);return}
+  if(type==='Income'||type==='Expense'){
+    let majorHead=document.getElementById('categoryMajorHead').value;
+    if(majorHead==='__new__')majorHead=normClass(document.getElementById('newMajorHead').value);
+    if(!majorHead){toast('Select or enter a Major Head before adding a category.',true);return}
+    let group=state.incomeGroups.find(g=>g.type===type&&g.majorHead===majorHead);
+    if(!group){group={id:uid('ig'),type,majorHead,categories:[]};state.incomeGroups.push(group)}
+    let category=group.categories.find(c=>c.name.toLowerCase()===name.toLowerCase());
+    if(!category){category={name,subcategories:[]};group.categories.push(category)}
+    selectedName=category.name;
+    selectedMajorHead=majorHead;
+    await putMany('incomeGroups',state.incomeGroups);
+  }else{
+    let category=state.categories.find(c=>c.type===type&&c.name.toLowerCase()===name.toLowerCase());
+    if(!category){category={id:uid('category'),type,name,subcategories:[]};await put('categories',category)}
+    else selectedName=category.name;
+  }
+  await loadState();
+  document.getElementById('newCategoryRow').classList.add('hidden');
+  document.getElementById('newCategoryName').value='';
+  if(selectedMajorHead){
+    renderCategoryMajorHeads();
+    document.getElementById('categoryMajorHead').value=selectedMajorHead;
+  }
+  renderCategoryNameOptions();
+  document.getElementById('categoryName').value=selectedName;
+  renderCategoryTree();renderDashboardFilters();renderAll();renderIncomePage();
+  toast(`Category "${selectedName}" is ready for subcategories.`);
 }
 async function deleteCategory(id){
   const category=state.categories.find(c=>c.id===id);
@@ -1470,6 +1793,7 @@ function renderSettings(){
   document.getElementById('currencySetting').value=state.settings.currency||'BDT';
   document.getElementById('localeSetting').value=state.settings.locale||'en-BD';
   renderYearList();
+  renderMigrationHistory();
   renderStorageInfo();
 }
 function renderYearList(){
@@ -1520,17 +1844,21 @@ async function createBackup(){
     const backup={
       records:state.records,
       categories:state.categories,
+      incomeExpenses:state.incomeExpenses,
+      incomeGroups:state.incomeGroups,
+      migrationHistory:state.migrationHistory,
       documents:state.documents.map(({blob,...doc})=>doc),
       settings:settings.reduce((out,s)=>(out[s.key]=s.value,out),{}),
       backupDate:new Date().toISOString(),
-      version:'1.0'
+      version:'1.1'
     };
     zip.file('backup.json',JSON.stringify(backup,null,2));
-    zip.file('metadata.json',JSON.stringify({name:'Personal Assets & Liabilities Management System',version:'1.0',database:DB_NAME,createdAt:backup.backupDate,records:state.records.length,documents:state.documents.length},null,2));
+    zip.file('metadata.json',JSON.stringify({name:'Personal Finance Management System',version:'1.1',database:DB_NAME,createdAt:backup.backupDate,records:state.records.length,incomeExpenses:state.incomeExpenses.length,documents:state.documents.length},null,2));
     const folder=zip.folder('documents');
     for(const doc of state.documents){
       const bytes=await getDocBlob(doc.id);                 // read each PDF only while it is being written
-      if(bytes)folder.file(`${doc.financialType==='Liability'?'liabilities':'assets'}/${doc.id}-${doc.name||'document.pdf'}`,bytes);
+      const kind={Income:'income',Expense:'expenses',Liability:'liabilities'}[doc.financialType]||'assets';
+      if(bytes)folder.file(`${kind}/${doc.id}-${doc.name||'document.pdf'}`,bytes);
     }
     const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'});
     const fileName=`Personal-Finance-Backup-${new Date().toISOString().replace(/[:.]/g,'-')}.zip`;
@@ -1560,6 +1888,9 @@ async function performRestore(){
     const backupFile=zip.file('backup.json');if(!backupFile)throw new Error('Missing backup.json');
     const backup=JSON.parse(await backupFile.async('text'));
     if(!backup.records||!backup.categories||backup.version!==undefined&&Number.parseFloat(backup.version)<1)throw new Error('Unsupported or invalid backup format');
+    const incomeExpenses=backup.incomeExpenses||[];
+    const incomeGroups=backup.incomeGroups||[];
+    const migrationHistory=backup.migrationHistory||[];
     const documents=(backup.documents||[]).map(doc=>{const clean=Object.assign({},doc);delete clean.blob;return clean});
     // Read every PDF into memory BEFORE touching the database, so a broken archive cannot
     // destroy good local data.
@@ -1576,11 +1907,17 @@ async function performRestore(){
       // One transaction per store: a quota failure leaves that store untouched instead of half written.
       await replaceStore('categories',backup.categories||[]);
       await replaceStore('records',backup.records||[]);
+      await replaceStore('incomeGroups',incomeGroups);
+      await replaceStore('incomeExpenses',incomeExpenses);
+      await replaceStore('migrationHistory',migrationHistory);
       await replaceStore('documents',documents);
       await replaceStore('documentBlobs',blobs);
     }else{
       for(const category of backup.categories||[]){if(!await getOne('categories',category.id))await put('categories',category)}
       for(const record of backup.records||[]){if(!await getOne('records',record.id))await put('records',record)}
+      for(const group of incomeGroups){if(!await getOne('incomeGroups',group.id))await put('incomeGroups',group)}
+      for(const entry of incomeExpenses){if(!await getOne('incomeExpenses',entry.id))await put('incomeExpenses',entry)}
+      for(const mig of migrationHistory){if(!await getOne('migrationHistory',mig.id))await put('migrationHistory',mig)}
       for(const document of documents){if(!await getOne('documents',document.id))await put('documents',document)}
       for(const blob of blobs){if(!await getOne('documentBlobs',blob.id))await put('documentBlobs',blob)}
     }
@@ -1588,7 +1925,7 @@ async function performRestore(){
     await loadState();
     state.settings=(await getAll('settings')).reduce((out,s)=>(out[s.key]=s.value,out),state.settings||{});
     renderAll();
-    toast(`Backup restored: ${backup.records?.length||0} record(s) and ${blobs.length} document(s)`);
+    toast(`Backup restored: ${backup.records?.length||0} record(s), ${incomeExpenses.length} transaction(s) and ${blobs.length} document(s)`);
   }catch(error){
     console.error(error);toast(error.message||'Unable to restore backup.',true);
   }finally{
@@ -1762,58 +2099,54 @@ function mapSheetToRecords(schema,aoa){
 
 const MAX_IMPORT_BYTES=30*1024*1024;      // bounds the work an untrusted workbook can cause
 const MAX_IMPORT_ROWS=20000;
-async function importExcel(event){
-  const file=event.target.files[0];if(!file)return;
-  if(!window.XLSX){toast('Excel library is unavailable.',true);event.target.value='';return}
-  if(file.size>MAX_IMPORT_BYTES){toast('That workbook is larger than 30 MB. Split it and import the parts.',true);event.target.value='';return}
+let replaceMigrationId=null;              // set while replacing a migration batch (Edit action)
+
+/** Shared import pipeline: route a file to the right worker. `replaceId` re-imports into an existing batch. */
+async function runImport(file,replaceId){
+  if(!file)return;
+  if(!window.XLSX){toast('Excel library is unavailable. Check your internet connection.',true);return}
+  if(file.size>MAX_IMPORT_BYTES){toast('That file is larger than 30 MB. Split it and import the parts.',true);return}
   try{
-    const workbook=XLSX.read(await file.arrayBuffer(),{type:'array'});
-    const seen=new Set(state.records.filter(r=>r.sourceSheet).map(r=>`${r.sourceSheet}|${r.sourceRow}`));
-    const toSave=[],years=new Set();
-    let skippedDuplicates=0,manual=0,truncated=0;
-    const summary=[];
-    for(const sheetName of workbook.SheetNames){
-      if(/balance sheet/i.test(sheetName))continue;
-      const schema=findSchemaBySheet(sheetName);
-      if(!schema){manual++;continue}
-      const aoa=XLSX.utils.sheet_to_json(workbook.Sheets[sheetName],{header:1,defval:'',raw:true});
-      if(aoa.length>MAX_IMPORT_ROWS){aoa.length=MAX_IMPORT_ROWS;truncated++}
-      const {records,headerRow}=mapSheetToRecords(schema,aoa);
-      if(headerRow<0){manual++;continue}
-      let count=0;
-      for(const record of records){
-        const key=`${record.sourceSheet}|${record.sourceRow}`;
-        if(seen.has(key)){skippedDuplicates++;continue}
-        seen.add(key);
-        record.id=uid('record');record.updatedAt=new Date().toISOString();
-        if(record.incomeYear)years.add(record.incomeYear);
-        toSave.push(record);count++;
+    const isCsv=/\.csv$/i.test(file.name||'');
+    if(!isCsv){
+      const workbook=XLSX.read(await file.arrayBuffer(),{type:'array'});
+      const first=workbook.SheetNames[0];
+      const aoa=XLSX.utils.sheet_to_json(workbook.Sheets[first],{header:1,defval:'',raw:true});
+      if(detectBudgeHeader(aoa)>=0){
+        await importBudgeFile(aoa,file.name,replaceId);
+      }else if(isIncomeExpensesWorkbook(workbook)){
+        await importIncomeExpensesWorkbook(workbook,replaceId,file.name);
+      }else{
+        await importAssetsLiabilitiesWorkbook(workbook,replaceId,file.name);
       }
-      summary.push(`${schema.subcategory}: ${count}`);
+    }else{
+      const text=(await file.text()).replace(/^\uFEFF/,'');
+      const wb=XLSX.read(text,{type:'string',raw:true});
+      const aoa=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:'',raw:true});
+      if(detectBudgeHeader(aoa)>=0){
+        await importBudgeFile(aoa,file.name,replaceId);
+      }else{
+        toast('That CSV file is not a recognised Budge export.',true);
+      }
     }
-    // make sure every imported category exists in the classification tree
-    const newCategories=[];
-    for(const r of toSave){
-      let category=state.categories.find(c=>c.type===r.type&&c.name===r.category)||newCategories.find(c=>c.type===r.type&&c.name===r.category);
-      if(!category){category={id:uid('category'),type:r.type,name:r.category,subcategories:[]};newCategories.push(category)}
-      if(!category.subcategories.includes(r.subcategory)){category.subcategories.push(r.subcategory);if(!newCategories.includes(category))newCategories.push(category)}
-    }
-    if(newCategories.length)await putMany('categories',newCategories);
-    if(toSave.length)await putMany('records',toSave);
-    const knownYears=new Set(state.settings.incomeYears||[]);
-    if([...years].some(y=>!knownYears.has(y))){
-      state.settings.incomeYears=[...new Set([...knownYears,...years])].sort((a,b)=>String(b).localeCompare(String(a)));
-      await put('settings',{key:'incomeYears',value:state.settings.incomeYears});
-    }
-    await loadState();renderAll();
-    const truncatedNote=truncated?` ${truncated} sheet(s) were read up to ${MAX_IMPORT_ROWS} rows.`:'';
-    toast(`Import complete: ${toSave.length} imported, ${skippedDuplicates} duplicate(s) skipped, ${manual} sheet(s) need manual review.${truncatedNote}`,manual>0&&!toSave.length);
-    console.info('Excel import summary',summary);
   }catch(error){
-    console.error(error);toast(error.message||'Unable to import workbook.',true);
-  }finally{
-    event.target.value='';
+    console.error(error);toast(error.message||'Unable to import file.',true);
   }
+}
+
+async function importExcel(event){
+  const file=event.target.files[0];
+  try{await runImport(file,null)}finally{event.target.value='';}
+}
+/** File chosen via the migration editor's "Replace" button: re-import into the same batch. */
+async function replaceMigrationFile(event){
+  const file=event.target.files[0],migId=replaceMigrationId;
+  event.target.value='';
+  if(!file||!migId)return;
+  const mig=state.migrationHistory.find(m=>m.id===migId);
+  if(mig)document.getElementById('migrationEditModal').close();
+  await runImport(file,migId);
+  replaceMigrationId=null;
 }
 
 /* ==========================================================================
@@ -2168,6 +2501,1087 @@ function generateExcelReport(){
   sheets.forEach(s=>XLSX.utils.book_append_sheet(workbook,s.ws,s.name));
   XLSX.writeFile(workbook,`Personal-Finance-Report-${dashFilters.year||'All-Years'}-${todayISO()}.xlsx`);
   toast(`Excel report generated (${sheets.length+1} sheets)`);
+}
+
+/* ==========================================================================
+   Income & Expenses — classification helpers, import, page, modal, exports
+   ========================================================================== */
+const normClass=s=>String(s??'').replace(/\s+/g,' ').trim();
+const normKey=s=>normClass(s).toLowerCase().replace(/\.+$/,'');
+let incomeYearInit=false;
+let incomeKpiPrev=[];
+const FISCAL_MONTHS=['July','August','September','October','November','December','January','February','March','April','May','June'];
+const fiscalMonthName=n=>FISCAL_MONTHS[(Number(n)||0)-1]||'';
+
+function groupForMajorHead(majorHead){return state.incomeGroups.find(g=>g.majorHead===majorHead)||null}
+function incomeMajorHeads(type){return (type?state.incomeGroups.filter(g=>g.type===type):state.incomeGroups).map(g=>g.majorHead)}
+function incomeCategoriesFor(majorHead){const g=groupForMajorHead(majorHead);return g?g.categories.map(c=>c.name):[]}
+function incomeSubcategoriesFor(majorHead,category){const g=groupForMajorHead(majorHead);const c=g&&g.categories.find(c=>c.name===category);return c?c.subcategories:[]}
+
+/** Ensure a type > majorHead > category > subcategory path exists in the tree, auto-registering as needed. */
+function ensureIncomeClass(type,majorHead,category,subcategory){
+  majorHead=normClass(majorHead)||(type==='Income'?'Other Income':'Any Other Expenses');
+  category=normClass(category);
+  let group=state.incomeGroups.find(g=>g.type===type&&g.majorHead===majorHead);
+  if(!group){group={id:uid('ig'),type,majorHead,categories:[]};state.incomeGroups.push(group)}
+  let catDef=group.categories.find(c=>normKey(c.name)===normKey(category));
+  if(!catDef){
+    if(!category)category=type==='Income'?'General Income':'Miscellaneous';
+    catDef=group.categories.find(c=>normKey(c.name)===normKey(category));
+    if(!catDef){catDef={name:category,subcategories:[]};group.categories.push(catDef)}
+  }
+  let sub=normClass(subcategory);
+  if(sub){
+    const existing=catDef.subcategories.find(s=>normKey(s)===normKey(sub));
+    if(existing)sub=existing;
+    else catDef.subcategories.push(sub);
+  }else{
+    sub=catDef.subcategories[0]||'Any Other Expenses';
+    if(!catDef.subcategories.length)catDef.subcategories.push(sub);
+  }
+  return {majorHead:group.majorHead,category:catDef.name,subcategory:sub};
+}
+
+/* --- Budge import normalization --- */
+const BUDGE_CAT_ALIASES={
+  Income:{
+    'pgcl':{majorHead:'Income From Salary (PGCL)',category:'Salary & Bonuses'},
+    'income from salary (pgcl)':{majorHead:'Income From Salary (PGCL)',category:'Salary & Bonuses'},
+    'income from salary pgcl':{majorHead:'Income From Salary (PGCL)',category:'Salary & Bonuses'},
+    'other receive (pgcl)':{majorHead:'Income From Other Receive (PGCL)',category:'Allowances & Other Receives'},
+    'income from other receive (pgcl)':{majorHead:'Income From Other Receive (PGCL)',category:'Allowances & Other Receives'},
+    'income from other receive pgcl':{majorHead:'Income From Other Receive (PGCL)',category:'Allowances & Other Receives'}
+  },
+  Expense:{
+    'auto and transportation expenses':{majorHead:'Auto and Transportation Expenses'},
+    'regular contribution for family':{majorHead:'Expenses for Food, Clothing and Other Essentials',category:'Contribution For Family',sub:'Regular'},
+    'mobile recharge, internet etc':{majorHead:'Household and Utility Expenses',category:'Utilities & Home Support',sub:'Phone, Internet, TV channels and Subscription'},
+    'mobile recharge, internate etc':{majorHead:'Household and Utility Expenses',category:'Utilities & Home Support',sub:'Phone, Internet, TV channels and Subscription'},
+    'electricity bill':{majorHead:'Household and Utility Expenses',category:'Utilities & Home Support',sub:'Electricity'},
+    'gas, water, sewer and garbage':{majorHead:'Household and Utility Expenses',category:'Utilities & Home Support',sub:'Gas, Water, Sewer and Garbage'},
+    'wifi':{majorHead:'Household and Utility Expenses',category:'Utilities & Home Support',sub:'Phone, Internet, TV channels and Subscription'},
+    'home-support stuff and other expenses':{majorHead:'Household and Utility Expenses',category:'Utilities & Home Support',sub:'Home-Support Staff and Other Expenses'},
+    'home-support staff and other expenses':{majorHead:'Household and Utility Expenses',category:'Utilities & Home Support',sub:'Home-Support Staff and Other Expenses'},
+    'any other expenses':{majorHead:'Any Other Expenses',category:'Miscellaneous',sub:'Any Other Expenses'},
+    'other special expenses':{majorHead:'Festival And Other Special Expenses',category:'Special & Events',sub:'Other Special Expenses'},
+    'philanthropy, etc':{majorHead:'Festival And Other Special Expenses',category:'Special & Events',sub:'Philanthropy, Etc'},
+    'philanthropy, etc.':{majorHead:'Festival And Other Special Expenses',category:'Special & Events',sub:'Philanthropy, Etc'},
+    'festival, party, events':{majorHead:'Festival And Other Special Expenses',category:'Special & Events',sub:'Festival, Party, Events'},
+    'domestic and overseas tour, holiday, etc':{majorHead:'Festival And Other Special Expenses',category:'Special & Events'},
+    'domestic and overseas tour, holiday, etc.':{majorHead:'Festival And Other Special Expenses',category:'Special & Events'},
+    'tax, charges etc':{majorHead:'Tax, Charges, Etc. Paid',category:'Tax & Surcharge'},
+    'tax, charges etc.':{majorHead:'Tax, Charges, Etc. Paid',category:'Tax & Surcharge'},
+    'accommodation expense':{majorHead:'Accommodation Expense',category:'Accommodation',sub:'Household Rent'},
+    'pocket money':{majorHead:'Expenses for Food, Clothing and Other Essentials',category:'Pocket Money'},
+    'education expenses':{majorHead:'Education Expenses',category:'Education',sub:'Education Expenses'}
+  }
+};
+const BUDGE_SUB_ALIASES={
+  'eating out':'Dining/Eating Out',
+  'snacks':'Snacks items',
+  'grocery':'Grocery items',
+  'payment of tds & ait':'Payment of Tax at Source & Advance Tax',
+  'payment of tax at source & advance tax':'Payment of Tax at Source & Advance Tax'
+};
+function normalizeBudgeClassification(type,category,subcategory){
+  const cat=normClass(category);
+  let sub=normClass(subcategory);
+  const lcat=normKey(cat),lsub=normKey(sub);
+  const alias=(BUDGE_CAT_ALIASES[type]||{})[lcat];
+  let majorHead='',resolvedCategory='';
+  if(alias){majorHead=alias.majorHead;resolvedCategory=alias.category||'';if(alias.sub)sub=alias.sub}
+  if(!majorHead){
+    for(const g of state.incomeGroups){
+      if(g.type!==type)continue;
+      if(normKey(g.majorHead)===lcat){majorHead=g.majorHead;resolvedCategory=(g.categories[0]&&g.categories[0].name)||'';break}
+      const cd=g.categories.find(c=>normKey(c.name)===lcat);
+      if(cd){majorHead=g.majorHead;resolvedCategory=cd.name;break}
+      for(const c of g.categories){
+        const sm=c.subcategories.find(s=>normKey(s)===lcat);
+        if(sm){majorHead=g.majorHead;resolvedCategory=c.name;if(!sub)sub=sm;break}
+      }
+      if(majorHead)break;
+    }
+  }
+  if(majorHead==='Auto and Transportation Expenses'&&!resolvedCategory){
+    resolvedCategory=(lsub==='fuel and maintenance'||lsub==='fuel'||lsub==='maintenance')?'Fuel and Maintenance':'Other Transportation';
+  }
+  if(!majorHead){
+    if(type==='Income'){majorHead='Other Income';resolvedCategory='General Income'}
+    else{majorHead='Any Other Expenses';resolvedCategory='Miscellaneous'}
+  }
+  if(BUDGE_SUB_ALIASES[lsub])sub=BUDGE_SUB_ALIASES[lsub];
+  return ensureIncomeClass(type,majorHead,resolvedCategory,sub);
+}
+function hashString(str){
+  let h1=0xdeadbeef>>>0,h2=0x41c6ce57>>>0;
+  for(let i=0;i<str.length;i++){
+    const ch=str.charCodeAt(i);
+    h1=Math.imul(h1^ch,2654435761);h2=Math.imul(h2^ch,1597334677);
+  }
+  h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);
+  h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);
+  return (h2>>>0).toString(16).padStart(8,'0')+(h1>>>0).toString(16).padStart(8,'0');
+}
+function incomeFingerprint(date,amount,account,majorHead,category,subcategory,description){
+  const parts=[String(date||''),Number(amount||0).toFixed(2),normClass(account).toLowerCase(),normClass(majorHead).toLowerCase(),normClass(category).toLowerCase(),normClass(subcategory).toLowerCase(),normClass(description).toLowerCase()];
+  return hashString(parts.join('|'));
+}
+function normalizeAccount(value){
+  const s=normClass(value);
+  const found=ACCOUNTS.find(a=>a.toLowerCase()===s.toLowerCase());
+  return found||'Other';
+}
+function parseBudgeDate(value){
+  const s=String(value??'').trim();
+  const m=s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if(m)return `${m[3]}-${pad2(+m[2])}-${pad2(+m[1])}`;
+  return normalizeExcelDate(s);
+}
+function buildBudgeDescription(desc,payment,goal,category,subcategory){
+  if(desc)return desc;
+  const parts=[];
+  const catSub=normClass(`${category} > ${subcategory}`);
+  const paymentLower=normClass(payment).toLowerCase();
+  if(payment&&paymentLower!==normClass(catSub).toLowerCase()&&paymentLower!==normClass(category).toLowerCase())parts.push(payment);
+  if(goal)parts.push(goal);
+  return parts.join(' · ');
+}
+function detectBudgeHeader(aoa){
+  for(let i=0;i<Math.min(aoa.length,15);i++){
+    const cells=(aoa[i]||[]).map(c=>normKey(String(c??'')));
+    if(cells[0]==='date'&&cells.includes('amount')&&cells.includes('category')&&cells.includes('account'))return i;
+  }
+  return -1;
+}
+
+/* --- Income & Expenses.xlsx import --- */
+function isIncomeExpensesWorkbook(workbook){
+  const names=workbook.SheetNames.map(n=>n.toLowerCase());
+  const hasMonthly=workbook.SheetNames.some(n=>/^\(\d{2}\)\s+(july|august|september|october|november|december|january|february|march|april|may|june)/i.test(n));
+  return hasMonthly||names.includes('cash flow')||names.includes('total');
+}
+function findFiscalStart(workbook){
+  for(const name of workbook.SheetNames){
+    const aoa=XLSX.utils.sheet_to_json(workbook.Sheets[name],{header:1,defval:'',raw:true});
+    for(const row of (aoa||[]).slice(0,2)){
+      const cell=normClass(String((row||[])[0]||''));
+      const m=cell.match(/fiscal year\s+(\d{4})/i);
+      if(m)return +m[1];
+    }
+  }
+  return +(String(fiscalYearFromDate(todayISO())).split('-')[0]||new Date().getFullYear());
+}
+function monthEndDate(fiscalStart,monthNum){
+  const calMonth=monthNum<=6?monthNum+6:monthNum-6;
+  const calYear=monthNum<=6?fiscalStart:fiscalStart+1;
+  const last=new Date(calYear,calMonth,0).getDate();
+  return `${calYear}-${pad2(calMonth)}-${pad2(last)}`;
+}
+function makeIeRecord(type,cls,amount,date,sourceSheet,sourceRow,description){
+  return {id:uid('ie'),type,date,incomeYear:fiscalYearFromDate(date),majorHead:cls.majorHead,category:cls.category,subcategory:cls.subcategory,amount,account:'Other',description:description||'',documentIds:[],sourceSheet,sourceRow,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+}
+function findIncomeMajorHead(type,label){
+  const lower=normKey(label);
+  if(lower.startsWith('tax, charges, etc. paid'))return 'Tax, Charges, Etc. Paid';
+  const group=state.incomeGroups.find(g=>g.type===type&&normKey(g.majorHead)===lower);
+  return group?group.majorHead:null;
+}
+function findIncomeCategoryName(type,majorHead,label){
+  if(!majorHead)return null;
+  const g=state.incomeGroups.find(x=>x.type===type&&x.majorHead===majorHead);
+  if(!g)return null;
+  const lower=normKey(label);
+  const c=g.categories.find(c=>normKey(c.name)===lower);
+  return c?c.name:null;
+}
+function findIncomeSubcategoryName(type,majorHead,category,label){
+  if(!majorHead||!category)return null;
+  const g=state.incomeGroups.find(x=>x.type===type&&x.majorHead===majorHead);
+  const c=g&&g.categories.find(x=>x.name===category);
+  if(!c)return null;
+  const lower=normKey(label);
+  const s=c.subcategories.find(s=>normKey(s)===lower);
+  return s||null;
+}
+function parseIncomeExpensesSheet(aoa,monthNum,sheetName,fiscalStart){
+  const records=[];
+  let pCol=-1,aCol=-1;
+  for(let i=0;i<Math.min(aoa.length,6);i++){
+    const row=aoa[i]||[];
+    for(let c=0;c<row.length;c++){
+      const t=normKey(String(row[c]||''));
+      if(t==='particulars'&&pCol<0)pCol=c;
+      if(/^amount\s*\(taka\)/.test(t)&&aCol<0)aCol=c;
+    }
+  }
+  if(pCol<0)return records;
+  const date=monthEndDate(fiscalStart,monthNum);
+  let mode='income',curMajor=null,curCat=null,curSub=null;
+  for(let r=0;r<aoa.length;r++){
+    const row=aoa[r]||[];
+    const label=normClass(String(row[pCol]||''));
+    const amount=aCol>=0?parseExcelNumber(row[aCol]):0;
+    if(!label)continue;
+    const lower=normKey(label);
+    if(lower==='income'){mode='income';curMajor=curCat=curSub=null;continue}
+    if(/^expenses?\s*(\(.*\))?$/.test(lower)){mode='expense';curMajor=curCat=curSub=null;continue}
+    if(lower==='assets purchased'||lower==='investment'){mode='skip';continue}
+    if(mode==='skip')continue;
+    if(lower==='other outflow'||/^total/.test(lower)||/^(balance|total income|total expenses|particulars|amount \(taka\)|total amount \(taka\))$/.test(lower))continue;
+    if(/^(fiscal year.*|notes.*|bank accounts|previous balance)$/.test(lower))continue;
+    const type=mode==='income'?'Income':'Expense';
+    const major=findIncomeMajorHead(type,label);
+    if(major){
+      curMajor=major;curCat=null;curSub=null;
+      const g=state.incomeGroups.find(x=>x.type===type&&x.majorHead===major);
+      if(g&&g.categories.length===1)curCat=g.categories[0].name;
+      if(amount>0){const cls=ensureIncomeClass(type,major,curCat,label);records.push(makeIeRecord(type,cls,amount,date,sheetName,r+1,''))}
+      continue;
+    }
+    const catName=findIncomeCategoryName(type,curMajor,label);
+    if(catName){
+      curCat=catName;curSub=null;
+      if(amount>0){const cls=ensureIncomeClass(type,curMajor,catName,label);records.push(makeIeRecord(type,cls,amount,date,sheetName,r+1,''))}
+      continue;
+    }
+    const subName=findIncomeSubcategoryName(type,curMajor,curCat,label);
+    if(subName){
+      curSub=subName;
+      if(amount>0){const cls=ensureIncomeClass(type,curMajor,curCat,subName);records.push(makeIeRecord(type,cls,amount,date,sheetName,r+1,''))}
+      continue;
+    }
+    if(curMajor&&amount>0){
+      if(curSub){const cls=ensureIncomeClass(type,curMajor,curCat,curSub);records.push(makeIeRecord(type,cls,amount,date,sheetName,r+1,label))}
+      else{const cls=ensureIncomeClass(type,curMajor,curCat,label);records.push(makeIeRecord(type,cls,amount,date,sheetName,r+1,''))}
+    }
+  }
+  return records;
+}
+
+/* --- Dashboard income/expense data + charts + recent widget --- */
+function dashboardIncomeExpenses(){
+  const {from,to}=dashFilters;
+  let list=state.incomeExpenses;
+  if(from||to)list=list.filter(r=>r.date&&inRange(r.date,from,to));
+  return list;
+}
+function fiscalMonthFromDate(iso){
+  const m=String(iso||'').match(/^(\d{4})-(\d{2})/);
+  if(!m)return 0;
+  const mm=+m[2];
+  return mm>=7?mm-6:mm+6;
+}
+function renderIncomeCharts(records){
+  destroyChart('incomeTrendChart');destroyChart('expenseCategoryChart');
+  if(!window.Chart||!document.getElementById('incomeTrendChart')||!document.getElementById('expenseCategoryChart'))return;
+  const theme=chartTheme();
+  const anim={duration:reducedMotion()?0:900,easing:'easeOutQuart'};
+  const legend={position:'bottom',labels:{usePointStyle:true,boxWidth:8,color:theme.text}};
+  const scales={x:{grid:{display:false},ticks:{color:theme.text}},y:{grid:{color:theme.grid},ticks:{color:theme.text}}};
+  const months=['Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar','Apr','May','Jun'];
+  const incomeBy=[],expenseBy=[];
+  for(let m=1;m<=12;m++){
+    incomeBy.push(records.filter(r=>r.type==='Income'&&fiscalMonthFromDate(r.date)===m).reduce((s,r)=>s+(Number(r.amount)||0),0));
+    expenseBy.push(records.filter(r=>r.type==='Expense'&&fiscalMonthFromDate(r.date)===m).reduce((s,r)=>s+(Number(r.amount)||0),0));
+  }
+  charts.incomeTrendChart=new Chart(document.getElementById('incomeTrendChart'),{type:'bar',data:{labels:months,datasets:[
+    {label:'Income',data:incomeBy,backgroundColor:'#10b981',borderRadius:6,maxBarThickness:26},
+    {label:'Expenses',data:expenseBy,backgroundColor:'#f43f5e',borderRadius:6,maxBarThickness:26}
+  ]},options:{maintainAspectRatio:false,animation:anim,scales,plugins:{legend}}});
+  const group=Object.entries(records.filter(r=>r.type==='Expense').reduce((out,r)=>{out[r.majorHead]=(out[r.majorHead]||0)+(Number(r.amount)||0);return out},{}));
+  charts.expenseCategoryChart=new Chart(document.getElementById('expenseCategoryChart'),{type:'doughnut',data:{labels:group.map(x=>x[0]),datasets:[{data:group.map(x=>x[1]),backgroundColor:group.map((x,i)=>CHART_COLORS[i%CHART_COLORS.length]),borderWidth:0,hoverOffset:6}]},options:{maintainAspectRatio:false,cutout:'58%',animation:anim,plugins:{legend}}});
+}
+function renderRecentIncome(records){
+  const countEl=document.getElementById('recentIncomeCount'),tableEl=document.getElementById('recentIncomeTable');
+  if(!countEl||!tableEl)return;
+  const list=records.slice().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))).slice(0,8);
+  countEl.textContent=`${list.length} of ${records.length} recent`;
+  tableEl.innerHTML=`<thead><tr><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Category</th><th scope="col">Subcategory</th><th scope="col">Description</th><th scope="col" class="num">Amount</th></tr></thead><tbody>${list.map(r=>{
+    const sign=r.type==='Income'?'+':'−';
+    return `<tr><td>${esc(fmtDate(r.date)||'—')}</td><td><span class="badge ${r.type.toLowerCase()}">${esc(r.type)}</span></td><td>${esc(r.category)}</td><td>${esc(r.subcategory)}</td><td>${esc(r.description||'—')}</td><td class="num"><strong class="amount ${r.type.toLowerCase()}">${sign}${formatMoney(r.amount)}</strong></td></tr>`;
+  }).join('')||'<tr><td colspan="6"><div class="empty-state">No income or expense records in this range.</div></td></tr>'}</tbody>`;
+}
+
+/* --- Income & Expenses page --- */
+function incomeYearOptionsList(){
+  const years=[...new Set([...(state.settings.incomeYears||[]),...state.incomeExpenses.map(r=>String(r.incomeYear||'')).filter(Boolean)])];
+  return years.sort((a,b)=>String(b).localeCompare(String(a)));
+}
+function getFilteredIncomeExpenses(){
+  const f=incomeFilters;
+  const search=f.search.toLowerCase();
+  return state.incomeExpenses.filter(r=>{
+    if(f.type&&r.type!==f.type)return false;
+    if(f.year&&normIncomeYear(r.incomeYear)!==normIncomeYear(f.year))return false;
+    if(f.month&&fiscalMonthFromDate(r.date)!==+f.month)return false;
+    if(f.majorHead&&r.majorHead!==f.majorHead)return false;
+    if(f.category&&r.category!==f.category)return false;
+    if(f.subcategory&&r.subcategory!==f.subcategory)return false;
+    if(search){const hay=[r.description,r.category,r.subcategory,r.account,r.majorHead].map(v=>String(v??'').toLowerCase()).join(' ');if(!hay.includes(search))return false}
+    return true;
+  });
+}
+function renderIncomeFilters(){
+  if(!incomeYearInit){incomeFilters.year=fiscalYearFromDate(todayISO());incomeYearInit=true}
+  const host=document.getElementById('incomeFilters');
+  if(!host)return;
+  const years=incomeYearOptionsList();
+  const current=fiscalYearFromDate(todayISO());
+  if(!years.includes(current))years.unshift(current);
+  if(incomeFilters.year&&!years.includes(incomeFilters.year))incomeFilters.year='';
+  const option=(value,label,selected,disabled=false)=>`<option value="${esc(value)}" ${selected?'selected':''} ${disabled?'disabled':''}>${esc(label)}</option>`;
+  const heads=incomeMajorHeads(incomeFilters.type);
+  if(incomeFilters.majorHead&&!heads.includes(incomeFilters.majorHead))incomeFilters.majorHead='';
+  const g=incomeFilters.majorHead?groupForMajorHead(incomeFilters.majorHead):null;
+  const cats=g?g.categories.map(c=>c.name):[];
+  if(incomeFilters.category&&!cats.includes(incomeFilters.category))incomeFilters.category='';
+  const cat=g&&g.categories.find(c=>c.name===incomeFilters.category);
+  const subs=cat?cat.subcategories:[];
+  if(incomeFilters.subcategory&&!subs.includes(incomeFilters.subcategory))incomeFilters.subcategory='';
+  const anyFilter=incomeFilters.search||incomeFilters.year||incomeFilters.month||incomeFilters.type||incomeFilters.majorHead||incomeFilters.category||incomeFilters.subcategory;
+  host.innerHTML=`<div class="filter-row">
+    <input class="search" id="incomeSearch" placeholder="Search income and expenses…" aria-label="Search income and expenses" value="${esc(incomeFilters.search)}">
+    <select id="incomeYear" aria-label="Income year">${option('','All Years',!incomeFilters.year)}${years.map(y=>option(y,y,incomeFilters.year===y)).join('')}</select>
+    <select id="incomeMonth" aria-label="Month">${option('','All Months',!incomeFilters.month)}${FISCAL_MONTHS.map((m,i)=>option(String(i+1),m,String(i+1)===incomeFilters.month)).join('')}</select>
+    <select id="incomeType" aria-label="Type">${option('','All Types',!incomeFilters.type)}${option('Income','Income',incomeFilters.type==='Income')}${option('Expense','Expense',incomeFilters.type==='Expense')}</select>
+    <select id="incomeMajorHead" aria-label="Major head" ${heads.length?'':'disabled'}>${option('','All Major Heads',!incomeFilters.majorHead)}${heads.map(h=>option(h,h,incomeFilters.majorHead===h)).join('')}</select>
+    <select id="incomeCategory" aria-label="Category" ${cats.length?'':'disabled'}>${option('','All Categories',!incomeFilters.category)}${cats.map(c=>option(c,c,incomeFilters.category===c)).join('')}</select>
+    <select id="incomeSubcategory" aria-label="Subcategory" ${subs.length?'':'disabled'}>${option('','All Subcategories',!incomeFilters.subcategory)}${subs.map(s=>option(s,s,incomeFilters.subcategory===s)).join('')}</select>
+    <button type="button" class="btn filter-reset" id="incomeClear" ${anyFilter?'':'disabled'}>Clear Filters</button>
+  </div>`;
+  const rerender=()=>{incomePage=1;renderIncomePage()};
+  const bind=(id,key,followUp)=>{const el=document.getElementById(id);el.onchange=()=>{incomeFilters[key]=el.value;if(followUp)followUp();rerender()}};
+  const searchEl=document.getElementById('incomeSearch');
+  searchEl.oninput=(()=>{let t=null;return ()=>{clearTimeout(t);t=setTimeout(()=>{incomeFilters.search=searchEl.value;incomePage=1;const c=document.getElementById('incomeClear');if(c)c.disabled=!(incomeFilters.search||incomeFilters.year||incomeFilters.month||incomeFilters.type||incomeFilters.majorHead||incomeFilters.category||incomeFilters.subcategory);renderIncomeSummary();renderIncomeView()},180)}})();
+  bind('incomeYear','year');
+  bind('incomeMonth','month');
+  bind('incomeType','type',()=>{incomeFilters.majorHead='';incomeFilters.category='';incomeFilters.subcategory=''});
+  bind('incomeMajorHead','majorHead',()=>{incomeFilters.category='';incomeFilters.subcategory=''});
+  bind('incomeCategory','category',()=>{incomeFilters.subcategory=''});
+  bind('incomeSubcategory','subcategory');
+  const clear=document.getElementById('incomeClear');
+  if(clear)clear.onclick=()=>{Object.assign(incomeFilters,{search:'',year:'',month:'',type:'',majorHead:'',category:'',subcategory:''});rerender()};
+}
+function renderIncomeSummary(){
+  const list=getFilteredIncomeExpenses();
+  const income=list.filter(r=>r.type==='Income').reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const expenses=list.filter(r=>r.type==='Expense').reduce((s,r)=>s+(Number(r.amount)||0),0);
+  const net=income-expenses;
+  const rate=income>0?(net/income)*100:0;
+  const card=(i,iconName,label,value,kind,kpi,kpiInk,cls)=>`<div class="summary-card" style="--i:${i};--kpi:${kpi};--kpi-ink:${kpiInk}"><div class="summary-icon">${icon(iconName)}</div><div><p>${label}</p><strong class="kpi-value ${cls||''}" data-kind="${kind}" data-to="${value}">${kind==='money'?formatMoney(value):kind==='percent'?(Number(value).toFixed(1)+'%'):value}</strong></div></div>`;
+  document.getElementById('incomeSummaryCards').innerHTML=[
+    card(0,'up','Total Income',income,'money','var(--emerald-soft)','#059669'),
+    card(1,'down','Total Expenses',expenses,'money','var(--rose-soft)','#e11d48'),
+    card(2,'scale','Net Savings',net,'money','var(--primary-soft)','var(--primary-2)',net>=0?'kpi-pos':'kpi-neg'),
+    card(3,'layers','Savings Rate',rate,'percent','rgba(245,158,11,.13)','#d97706')
+  ].join('');
+  animateIncomeKpis();
+}
+function animateIncomeKpis(){
+  document.querySelectorAll('#incomeSummaryCards .kpi-value').forEach((el,i)=>{
+    const to=Number(el.dataset.to)||0,kind=el.dataset.kind;
+    const from=incomeKpiPrev[i]??0;
+    incomeKpiPrev[i]=to;
+    const fmt=v=>kind==='money'?formatMoney(v):kind==='percent'?(Number(v).toFixed(1)+'%'):String(Math.round(v));
+    if(reducedMotion()||from===to){el.textContent=fmt(to);return}
+    const duration=900,start=performance.now();
+    const step=now=>{const t=Math.min(1,(now-start)/duration);const eased=1-Math.pow(1-t,4);el.textContent=fmt(from+(to-from)*eased);if(t<1)requestAnimationFrame(step);else el.textContent=fmt(to)};
+    el.textContent=fmt(from);requestAnimationFrame(step);
+  });
+}
+function renderIncomeTable(){
+  const records=getFilteredIncomeExpenses().sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+  const pageSize=10,pages=Math.max(1,Math.ceil(records.length/pageSize));
+  incomePage=Math.min(incomePage,pages);
+  const pageRecords=records.slice((incomePage-1)*pageSize,incomePage*pageSize);
+  document.getElementById('incomeRecordCount').textContent=`${records.length} transaction${records.length===1?'':'s'} found`;
+  document.getElementById('incomeExpensesTable').innerHTML=`<thead><tr><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Major Head</th><th scope="col">Category</th><th scope="col">Subcategory</th><th scope="col">Account / Method</th><th scope="col">Description</th><th scope="col" class="num">Amount</th><th scope="col">Actions</th></tr></thead><tbody>${pageRecords.map((r,i)=>{
+    const id=esc(r.id);
+    const sign=r.type==='Income'?'+':'−';
+    const receipt=(r.documentIds||[]).length?`<button type="button" class="action-link" data-cmd="open-pdf" data-id="${esc(r.documentIds[0])}">Receipt</button>`:'';
+    return `<tr style="--i:${i}"><td>${esc(fmtDate(r.date)||'—')}</td><td><span class="badge ${r.type.toLowerCase()}">${esc(r.type)}</span></td><td>${esc(r.majorHead)}</td><td>${esc(r.category)}</td><td>${esc(r.subcategory)}</td><td>${esc(r.account||'—')}</td><td>${esc(r.description||'—')}</td><td class="num"><strong class="amount ${r.type.toLowerCase()}">${sign}${formatMoney(r.amount)}</strong></td><td class="actions-cell"><button type="button" class="action-link" data-cmd="view-income" data-id="${id}">View</button><button type="button" class="action-link" data-cmd="edit-income" data-id="${id}">Edit</button><button type="button" class="action-link danger" data-cmd="delete-income" data-id="${id}">Delete</button>${receipt}</td></tr>`;
+  }).join('')||'<tr><td colspan="9"><div class="empty-state">No income or expense records match these filters.</div></td></tr>'}</tbody>`;
+  document.getElementById('incomePagination').innerHTML=pages>1?Array.from({length:pages},(_,i)=>`<button type="button" class="${i+1===incomePage?'active':''}" data-cmd="income-page" data-id="${i+1}" aria-label="Page ${i+1}">${i+1}</button>`).join(''):'';
+}
+function orderIdx(arr,name){const i=arr.indexOf(name);return i<0?999:i}
+function buildIncomeBreakdown(list){
+  const build=(type)=>{
+    const recs=list.filter(r=>r.type===type);
+    const headMap=new Map();
+    for(const r of recs){
+      if(!headMap.has(r.majorHead))headMap.set(r.majorHead,{name:r.majorHead,cats:new Map()});
+      const head=headMap.get(r.majorHead);
+      if(!head.cats.has(r.category))head.cats.set(r.category,{name:r.category,subs:new Map()});
+      const cat=head.cats.get(r.category);
+      if(!cat.subs.has(r.subcategory))cat.subs.set(r.subcategory,{name:r.subcategory,count:0,total:0});
+      const sub=cat.subs.get(r.subcategory);
+      sub.count++;sub.total+=(Number(r.amount)||0);
+    }
+    const heads=[];
+    for(const head of headMap.values()){
+      const cats=[];
+      for(const cat of head.cats.values()){
+        cats.push({name:cat.name,count:[...cat.subs.values()].reduce((s,x)=>s+x.count,0),total:[...cat.subs.values()].reduce((s,x)=>s+x.total,0),subs:[...cat.subs.values()]});
+      }
+      heads.push({name:head.name,count:[...head.cats.values()].reduce((s,x)=>s+[...x.subs.values()].reduce((a,y)=>a+y.count,0),0),total:[...head.cats.values()].reduce((s,x)=>s+[...x.subs.values()].reduce((a,y)=>a+y.total,0),0),cats});
+    }
+    const orderHeads=state.incomeGroups.filter(g=>g.type===type).map(g=>g.majorHead);
+    heads.sort((a,b)=>orderIdx(orderHeads,a.name)-orderIdx(orderHeads,b.name));
+    heads.forEach(h=>{
+      const g=state.incomeGroups.find(x=>x.type===type&&x.majorHead===h.name);
+      const orderCats=g?g.categories.map(c=>c.name):[];
+      h.cats.sort((a,b)=>orderIdx(orderCats,a.name)-orderIdx(orderCats,b.name));
+      h.cats.forEach(c=>{
+        const cd=g&&g.categories.find(x=>x.name===c.name);
+        const orderSubs=cd?cd.subcategories:[];
+        c.subs.sort((a,b)=>orderIdx(orderSubs,a.name)-orderIdx(orderSubs,b.name));
+      });
+    });
+    return {heads,total:recs.reduce((s,r)=>s+(Number(r.amount)||0),0),count:recs.length};
+  };
+  return {income:build('Income'),expense:build('Expense')};
+}
+function renderIncomeBreakdown(){
+  const data=buildIncomeBreakdown(getFilteredIncomeExpenses());
+  const renderSection=(title,sec,isExpense)=>{
+    if(!sec.heads.length)return '';
+    const rows=sec.heads.map(h=>`<tr class="bd-major"><td>${esc(h.name)}</td><td class="count">${h.count}</td><td>${formatMoney(h.total)}</td></tr>`+
+      h.cats.map(c=>`<tr class="bd-cat"><td>${esc(c.name)}</td><td class="count">${c.count}</td><td>${formatMoney(c.total)}</td></tr>`+
+        c.subs.map(s=>`<tr class="bd-sub"><td>${esc(s.name)}</td><td class="count">${s.count}</td><td>${formatMoney(s.total)}</td></tr>`).join('')).join('')).join('');
+    return `<div class="breakdown-section"><div class="breakdown-title"><span class="pill ${isExpense?'expense':'income'}">${title}</span><span>${sec.count} transaction${sec.count===1?'':'s'} · ${formatMoney(sec.total)}</span></div><div class="table-wrap"><table class="breakdown-table"><thead><tr><th>Particulars</th><th class="count">Count</th><th>Amount</th></tr></thead><tbody>${rows}<tr class="bd-total ${isExpense?'expense-total':''}"><td>Total ${title}</td><td class="count">${sec.count}</td><td>${formatMoney(sec.total)}</td></tr></tbody></table></div></div>`;
+  };
+  const net=data.income.total-data.expense.total;
+  const netHtml=`<div class="breakdown-section"><div class="breakdown-title"><span class="pill income">NET SAVINGS</span></div><div class="table-wrap"><table class="breakdown-table"><tbody><tr class="bd-total"><td>Income − Expenses</td><td class="count"></td><td class="${net>=0?'kpi-pos':'kpi-neg'}">${formatMoney(net)}</td></tr></tbody></table></div></div>`;
+  document.getElementById('incomeBreakdown').innerHTML=renderSection('INCOME',data.income,false)+renderSection('EXPENSES',data.expense,true)+netHtml;
+}
+function renderIncomeView(){
+  document.getElementById('incomeTableTitle').textContent=incomeTab==='transactions'?'Transactions':'Category Summary';
+  document.getElementById('incomeTransactionsWrap').classList.toggle('hidden',incomeTab!=='transactions');
+  document.getElementById('incomeBreakdown').classList.toggle('hidden',incomeTab!=='breakdown');
+  document.getElementById('incomePagination').classList.toggle('hidden',incomeTab!=='transactions');
+  if(incomeTab==='transactions')renderIncomeTable();else renderIncomeBreakdown();
+}
+function renderIncomePage(){
+  renderIncomeFilters();
+  renderIncomeSummary();
+  renderIncomeView();
+}
+
+/* --- Income / Expense modal --- */
+function resetIncomeDocDraft(record){
+  incomeDocDraft.existing=record?(record.documentIds||[]).map(id=>state.documents.find(d=>d.id===id)).filter(Boolean):[];
+  incomeDocDraft.removed=new Set();incomeDocDraft.replaced=new Map();incomeDocDraft.added=[];
+}
+function renderIncomeDocManager(){
+  const host=document.getElementById('incomeDocManagerList');if(!host)return;
+  const rows=[];
+  incomeDocDraft.existing.forEach(d=>{
+    const removed=incomeDocDraft.removed.has(d.id),replacement=incomeDocDraft.replaced.get(d.id);
+    const name=replacement?replacement.name:(d.name||d.title||'receipt.pdf');
+    const tag=removed?'<span class="tag warn">Will be removed</span>':replacement?'<span class="tag">Will replace</span>':'';
+    rows.push(`<div class="doc-row ${removed?'removed':''}"><div class="doc-info"><strong>${esc(name)}</strong><span>${formatFileSize(replacement?replacement.size:d.size)}</span>${tag}</div><div class="doc-actions">${removed?'':`<button type="button" class="action-link" data-iact="view" data-id="${esc(d.id)}">View</button><button type="button" class="action-link" data-iact="replace" data-id="${esc(d.id)}">Replace</button>`}<button type="button" class="action-link ${removed?'':'danger'}" data-iact="${removed?'undo':'remove'}" data-id="${esc(d.id)}">${removed?'Undo remove':'Remove'}</button></div></div>`);
+  });
+  incomeDocDraft.added.forEach((f,i)=>{
+    rows.push(`<div class="doc-row"><div class="doc-info"><strong>${esc(f.name)}</strong><span>${formatFileSize(f.size)}</span><span class="tag new">New</span></div><div class="doc-actions"><button type="button" class="action-link" data-iact="view-new" data-idx="${i}">View</button><button type="button" class="action-link danger" data-iact="remove-new" data-idx="${i}">Remove</button></div></div>`);
+  });
+  host.innerHTML=rows.join('')||'<div class="doc-empty">No receipt PDF attached yet.</div>';
+}
+async function incomeDocDraftSource(id){
+  const meta=incomeDocDraft.existing.find(x=>x.id===id);if(!meta)return null;
+  const rep=incomeDocDraft.replaced.get(id);
+  if(rep)return {blob:rep,name:rep.name,size:rep.size};
+  const blob=await getDocBlob(id);if(!blob)return null;
+  return {blob,name:meta.name||meta.title||'receipt.pdf',size:meta.size||blob.size};
+}
+function replaceIncomeDocument(id){replacingDocumentId=id;document.getElementById('replaceDocumentFile').click()}
+function bindIncomeDocManager(){
+  const host=document.getElementById('incomeDocManager');if(!host)return;
+  host.onclick=async e=>{
+    const btn=e.target.closest('[data-iact]');if(!btn)return;
+    const {iact,id,idx}=btn.dataset;
+    if(iact==='view'){const src=await incomeDocDraftSource(id);if(src)await openPdfViewer(src)}
+    else if(iact==='replace'){replaceIncomeDocument(id)}
+    else if(iact==='remove'){incomeDocDraft.removed.add(id);incomeDocDraft.replaced.delete(id);renderIncomeDocManager()}
+    else if(iact==='undo'){incomeDocDraft.removed.delete(id);renderIncomeDocManager()}
+    else if(iact==='view-new'){const f=incomeDocDraft.added[+idx];if(f)await openPdfViewer({blob:f,name:f.name,size:f.size})}
+    else if(iact==='remove-new'){incomeDocDraft.added.splice(+idx,1);renderIncomeDocManager()}
+  };
+  const input=document.getElementById('incomeDocument');
+  if(input)input.onchange=e=>{
+    const files=[...e.target.files];
+    incomeDocDraft.added.push(...files.filter(isPdfFile));
+    if(files.some(f=>!isPdfFile(f)))toast('Only PDF files can be attached.',true);
+    e.target.value='';
+    renderIncomeDocManager();
+  };
+}
+function openIncomeModal(id=null){
+  editingIncomeId=id;
+  const record=id?state.incomeExpenses.find(r=>r.id===id):null;
+  resetIncomeDocDraft(record);
+  document.getElementById('incomeModalTitle').textContent=record?'Edit Transaction':'Add Income / Expense';
+  document.getElementById('incomeModalSubtitle').textContent=record?`${record.type} · ${record.majorHead}`:'Fields adapt to the selected type and classification';
+  const startType=record?.type||'Expense';
+  const dateValue=record?record.date||todayISO():todayISO();
+  document.getElementById('incomeFormFields').innerHTML=`<div class="income-form-grid">
+    <label>Transaction Type *<select id="incomeTypeSelect" required><option value="Income" ${startType==='Income'?'selected':''}>Income</option><option value="Expense" ${startType==='Expense'?'selected':''}>Expense</option></select></label>
+    <label>Date *<input id="incomeDate" type="date" required value="${esc(dateValue)}"></label>
+    <label>Major Head *<select id="incomeMajorHeadSelect" required></select></label>
+    <label>Category *<select id="incomeCategorySelect" required></select></label>
+    <label>Subcategory *<select id="incomeSubcategorySelect" required></select></label>
+    <label>Account / Payment Method<select id="incomeAccount">${ACCOUNTS.map(a=>`<option value="${esc(a)}" ${a===(record?.account||'Cash in Hand')?'selected':''}>${esc(a)}</option>`).join('')}</select></label>
+    <label>Amount (BDT) *<input id="incomeAmount" type="number" step="0.01" min="0" inputmode="decimal" required value="${esc(record?record.amount:'')}" placeholder="0.00"></label>
+    <label class="full">Description / Notes<textarea id="incomeDescription" rows="2">${esc(record?.description||'')}</textarea></label>
+    <label class="full">Receipt / Voucher (PDF)<input id="incomeDocument" type="file" accept=".pdf,application/pdf"><span class="hint">Optional receipt or voucher PDF.</span></label>
+    <div class="doc-manager full" id="incomeDocManager"><h4>Attached receipt</h4><div class="doc-list" id="incomeDocManagerList"></div></div>
+  </div>`;
+  document.querySelector('#incomeForm .modal-foot').innerHTML='<button type="button" class="btn" data-close-modal>Cancel</button><button type="submit" class="btn btn-primary">Save Transaction</button>';
+  document.querySelectorAll('#incomeForm [data-close-modal]').forEach(b=>b.onclick=()=>document.getElementById('incomeModal').close());
+  const typeSel=document.getElementById('incomeTypeSelect'),majorSel=document.getElementById('incomeMajorHeadSelect'),catSel=document.getElementById('incomeCategorySelect'),subSel=document.getElementById('incomeSubcategorySelect');
+  const updateMajor=()=>{
+    const heads=incomeMajorHeads(typeSel.value);
+    majorSel.innerHTML=heads.map(h=>`<option value="${esc(h)}">${esc(h)}</option>`).join('');
+    if(record&&record.type===typeSel.value&&heads.includes(record.majorHead))majorSel.value=record.majorHead;
+    updateCategory();
+  };
+  const updateCategory=()=>{
+    const cats=incomeCategoriesFor(majorSel.value);
+    catSel.innerHTML=cats.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    if(record&&record.majorHead===majorSel.value&&cats.includes(record.category))catSel.value=record.category;
+    updateSubcategory();
+  };
+  const updateSubcategory=()=>{
+    const subs=incomeSubcategoriesFor(majorSel.value,catSel.value);
+    subSel.innerHTML=(subs.length?subs:[catSel.value].filter(Boolean)).map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    if(record&&record.category===catSel.value&&subs.includes(record.subcategory))subSel.value=record.subcategory;
+  };
+  typeSel.onchange=updateMajor;
+  majorSel.onchange=updateCategory;
+  catSel.onchange=updateSubcategory;
+  updateMajor();
+  bindIncomeDocManager();
+  renderIncomeDocManager();
+  document.getElementById('incomeModal').showModal();
+}
+async function saveIncomeRecord(event){
+  event.preventDefault();
+  if(savingIncome)return;
+  const form=event.target;
+  if(form.querySelector('select:invalid,input:invalid,textarea:invalid')){form.reportValidity();return}
+  savingIncome=true;
+  try{
+    const type=document.getElementById('incomeTypeSelect').value;
+    const majorHead=document.getElementById('incomeMajorHeadSelect').value;
+    const category=document.getElementById('incomeCategorySelect').value;
+    const subcategory=document.getElementById('incomeSubcategorySelect').value;
+    const date=document.getElementById('incomeDate').value;
+    const amount=Math.abs(Number(document.getElementById('incomeAmount').value||0));
+    const account=document.getElementById('incomeAccount').value;
+    const description=document.getElementById('incomeDescription').value.trim();
+    const old=editingIncomeId?state.incomeExpenses.find(r=>r.id===editingIncomeId):null;
+    const record=Object.assign({},old||{});
+    Object.assign(record,{id:old?old.id:uid('ie'),type,date,incomeYear:fiscalYearFromDate(date),majorHead,category,subcategory,amount,account,description});
+    if(!record.createdAt)record.createdAt=new Date().toISOString();
+    record.updatedAt=new Date().toISOString();
+
+    let documentIds=[...(old?.documentIds||[])];
+    for(const docId of incomeDocDraft.removed){await remove('documents',docId);await remove('documentBlobs',docId);documentIds=documentIds.filter(x=>x!==docId)}
+    for(const [docId,file] of incomeDocDraft.replaced){
+      const existing=state.documents.find(d=>d.id===docId);
+      if(!existing||incomeDocDraft.removed.has(docId))continue;
+      await put('documentBlobs',{id:docId,blob:file});
+      Object.assign(existing,{name:file.name,title:file.name,type:file.type||'application/pdf',size:file.size,updatedAt:new Date().toISOString()});
+      await put('documents',existing);
+    }
+    for(const file of incomeDocDraft.added){
+      const docId=uid('doc');
+      await put('documentBlobs',{id:docId,blob:file});
+      await put('documents',{id:docId,recordId:record.id,title:file.name,name:file.name,type:file.type||'application/pdf',size:file.size,category,subcategory,financialType:type,incomeYear:record.incomeYear||'',createdAt:new Date().toISOString()});
+      documentIds.push(docId);
+    }
+    record.documentIds=documentIds;
+
+    await put('incomeExpenses',record);
+    await loadState();
+    document.getElementById('incomeModal').close();
+    editingIncomeId=null;
+    renderIncomePage();renderDashboard();
+    toast(old?'Transaction saved':'Transaction created');
+  }catch(error){
+    console.error(error);
+    const quota=error&&error.name==='QuotaExceededError';
+    toast(quota?'Could not save — browser storage is full.':'Could not save the transaction'+(error.message?` — ${error.message}`:''),true);
+  }finally{
+    savingIncome=false;
+  }
+}
+async function deleteIncomeRecord(id){
+  if(await confirm('Delete this income / expense transaction? Any attached receipt will also be removed.','Delete Transaction')){
+    const record=state.incomeExpenses.find(r=>r.id===id);
+    const linked=new Set([...(record?.documentIds||[]),...state.documents.filter(d=>d.recordId===id).map(d=>d.id)]);
+    for(const docId of linked){await remove('documents',docId);await remove('documentBlobs',docId)}
+    await remove('incomeExpenses',id);
+    await loadState();renderIncomePage();renderDashboard();toast('Transaction deleted');
+  }
+}
+function viewIncomeRecord(id){
+  const r=state.incomeExpenses.find(x=>x.id===id);if(!r)return;
+  editingIncomeId=null;
+  document.getElementById('incomeModalTitle').textContent=`${r.type} · ${r.category}`;
+  document.getElementById('incomeModalSubtitle').textContent=r.majorHead;
+  const docs=(r.documentIds||[]).map(id=>state.documents.find(d=>d.id===id)).filter(Boolean);
+  const docSection=docs.length?`<label class="full document-view-section">Attached Receipt<div class="document-view-list">${docs.map(d=>`<div class="document-view-item"><div class="document-info"><strong>${esc(d.name||d.title||'receipt.pdf')}</strong><span>${formatFileSize(d.size)}</span></div><div class="document-actions"><button type="button" class="btn" data-cmd="open-pdf" data-id="${esc(d.id)}">View PDF</button><button type="button" class="btn btn-primary" data-cmd="download-pdf" data-id="${esc(d.id)}">Download</button></div></div>`).join('')}</div></label>`:'';
+  const show=(label,value)=>`<label><span class="k">${esc(label)}</span><strong class="view-field">${value===''||value===undefined||value===null?'—':esc(value)}</strong></label>`;
+  document.getElementById('incomeFormFields').innerHTML=`<div class="income-form-grid">${show('Type',r.type)}${show('Date',fmtDate(r.date))}${show('Major Head',r.majorHead)}${show('Category',r.category)}${show('Subcategory',r.subcategory)}${show('Account / Method',r.account)}${show('Amount',formatMoney(r.amount))}${show('Income Year',r.incomeYear)}${show('Description',r.description)}${docSection}</div>`;
+  document.querySelector('#incomeForm .modal-foot').innerHTML='<button type="button" class="btn" data-close-modal>Close</button>';
+  document.querySelectorAll('#incomeForm [data-close-modal]').forEach(b=>b.onclick=()=>document.getElementById('incomeModal').close());
+  document.getElementById('incomeModal').showModal();
+}
+
+/* --- Income page exports --- */
+function incomeFilterText(){
+  const f=incomeFilters;
+  return ['Year',f.year||'All','Month',f.month?fiscalMonthName(f.month):'All','Type',f.type||'All','Search',f.search||'All'].join('  |  ');
+}
+function exportIncomeExcel(){
+  if(!window.XLSX){toast('Excel library is unavailable. Check your internet connection.',true);return}
+  const list=getFilteredIncomeExpenses();
+  if(!list.length){toast('No income / expense records match the current filters.',true);return}
+  const data=buildIncomeBreakdown(list);
+  const totalIncome=data.income.total,totalExpenses=data.expense.total,net=totalIncome-totalExpenses,rate=totalIncome>0?(net/totalIncome)*100:0;
+  const summaryRows=[['Income & Expenses Report'],[`Generated ${generatedStamp()}`],[],
+    ['Total Income',totalIncome],['Total Expenses',totalExpenses],['Net Savings',net],['Savings Rate (%)',rate],[],
+    ['Type','Major Head','Category','Subcategory','Count','Amount']];
+  const block=(type,sec)=>sec.heads.forEach(h=>{
+    summaryRows.push([type,h.name,'','',h.count,h.total]);
+    h.cats.forEach(c=>{
+      summaryRows.push([type,'',c.name,'',c.count,c.total]);
+      c.subs.forEach(s=>summaryRows.push([type,'','',s.name,s.count,s.total]));
+    });
+  });
+  block('Income',data.income);block('Expense',data.expense);
+  const summaryWs=XLSX.utils.aoa_to_sheet(summaryRows);
+  summaryRows.forEach((r,i)=>{
+    if(typeof r[5]==='number'){const a=XLSX.utils.encode_cell({r:i,c:5});if(summaryWs[a])summaryWs[a].z=MONEY_FMT}
+    if(typeof r[1]==='number'){const a=XLSX.utils.encode_cell({r:i,c:1});if(summaryWs[a])summaryWs[a].z=MONEY_FMT}
+  });
+  summaryWs['!cols']=[{wch:12},{wch:30},{wch:26},{wch:30},{wch:10},{wch:16}];
+  const monthRows=[['Month','Income','Expenses','Net']];
+  for(let m=1;m<=12;m++){
+    const inc=list.filter(r=>r.type==='Income'&&fiscalMonthFromDate(r.date)===m).reduce((s,r)=>s+(Number(r.amount)||0),0);
+    const exp=list.filter(r=>r.type==='Expense'&&fiscalMonthFromDate(r.date)===m).reduce((s,r)=>s+(Number(r.amount)||0),0);
+    monthRows.push([FISCAL_MONTHS[m-1],inc,exp,inc-exp]);
+  }
+  const monthWs=XLSX.utils.aoa_to_sheet(monthRows);
+  monthRows.forEach((r,i)=>{for(let c=1;c<=3;c++){const a=XLSX.utils.encode_cell({r:i,c});if(monthWs[a])monthWs[a].z=MONEY_FMT}});
+  monthWs['!cols']=[{wch:14},{wch:16},{wch:16},{wch:16}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,summaryWs,'Summary');
+  XLSX.utils.book_append_sheet(wb,monthWs,'Monthly Breakdown');
+  XLSX.writeFile(wb,`Income-Expenses-${incomeFilters.year||'All-Years'}-${todayISO()}.xlsx`);
+  toast('Income & Expenses Excel exported');
+}
+async function exportIncomePdf(){
+  const list=getFilteredIncomeExpenses();
+  if(!list.length){toast('No income / expense records match the current filters.',true);return}
+  const JsPDF=window.jspdf&&window.jspdf.jsPDF;
+  if(!JsPDF){toast('PDF library is unavailable. Check your internet connection.',true);return}
+  const data=buildIncomeBreakdown(list);
+  const doc=new JsPDF({orientation:'p',unit:'pt',format:'a4',compress:true});
+  if(typeof doc.autoTable!=='function'){toast('PDF table plugin is unavailable. Check your internet connection.',true);return}
+  doc.setProperties({title:'Personal Finance - Income & Expenses Report',creator:'SOIKOT RAIHAN'});
+  const M=36,HEAD_H=110,FOOT_H=34;
+  const stamp=generatedStamp();
+  const pageW=()=>doc.internal.pageSize.getWidth();
+  const drawHeader=()=>{
+    const W=pageW();
+    doc.setFillColor(79,70,229);doc.rect(0,0,W,42,'F');
+    doc.setFillColor(16,185,129);doc.rect(0,42,W,3,'F');
+    doc.setTextColor(255,255,255);doc.setFont('helvetica','bold');doc.setFontSize(14);
+    doc.text('Personal Finance  |  Income & Expenses Report',M,27);
+    doc.setFont('helvetica','normal');doc.setFontSize(8.5);
+    doc.text(`Generated ${stamp}`,W-M,27,{align:'right'});
+    doc.setTextColor(100,116,139);doc.setFontSize(8);
+    doc.text(incomeFilterText(),M,56);
+  };
+  drawHeader();
+  const totalIncome=data.income.total,totalExpenses=data.expense.total,net=totalIncome-totalExpenses;
+  const kpi=[
+    [{content:'Total Income',styles:{fillColor:[236,253,245],textColor:[6,95,70],fontStyle:'bold'}},{content:pdfMoney(totalIncome),styles:{halign:'right',fillColor:[236,253,245],textColor:[6,95,70],fontStyle:'bold'}}],
+    [{content:'Total Expenses',styles:{fillColor:[255,241,242],textColor:[159,18,57],fontStyle:'bold'}},{content:pdfMoney(totalExpenses),styles:{halign:'right',fillColor:[255,241,242],textColor:[159,18,57],fontStyle:'bold'}}],
+    [{content:'Net Savings',styles:{fillColor:[238,242,255],textColor:[49,46,129],fontStyle:'bold'}},{content:pdfMoney(net),styles:{halign:'right',fillColor:[238,242,255],textColor:[49,46,129],fontStyle:'bold'}}],
+    [{content:'Savings Rate',styles:{fillColor:[255,251,235],textColor:[146,64,14],fontStyle:'bold'}},{content:(totalIncome>0?(net/totalIncome)*100:0).toFixed(1)+'%',styles:{halign:'right',fillColor:[255,251,235],textColor:[146,64,14],fontStyle:'bold'}}]
+  ];
+  doc.autoTable({startY:HEAD_H,theme:'grid',margin:{left:M,right:M},styles:{fontSize:9},body:kpi,columnStyles:{1:{cellWidth:120}}});
+  let y=doc.lastAutoTable.finalY+16;
+  const section=(title,sec,accent)=>{
+    if(!sec.heads.length)return;
+    const body=[];
+    sec.heads.forEach(h=>{
+      body.push([{content:h.name,styles:{fontStyle:'bold',fillColor:accent[1],textColor:accent[2]}},{content:String(h.count),styles:{halign:'center'}},{content:pdfMoney(h.total),styles:{halign:'right'}}]);
+      h.cats.forEach(c=>{
+        body.push([{content:'  '+c.name,styles:{fontStyle:'bold'}},'',{content:pdfMoney(c.total),styles:{halign:'right'}}]);
+        c.subs.forEach(s=>body.push([{content:'      '+s.name,styles:{textColor:[71,85,105]}},{content:String(s.count),styles:{halign:'center'}},{content:pdfMoney(s.total),styles:{halign:'right'}}]));
+      });
+    });
+    body.push([{content:`Total ${title}`,styles:{fontStyle:'bold',fillColor:accent[1],textColor:accent[2]}},{content:String(sec.count),styles:{halign:'center',fillColor:accent[1]}},{content:pdfMoney(sec.total),styles:{halign:'right',fillColor:accent[1],textColor:accent[2]}}]);
+    if(y>doc.internal.pageSize.getHeight()-FOOT_H-80){doc.addPage();drawHeader();y=HEAD_H}
+    doc.autoTable({startY:y,theme:'grid',margin:{left:M,right:M,top:HEAD_H,bottom:FOOT_H},
+      head:[['Particulars','Count',{content:'Amount',styles:{halign:'right'}}]],
+      body,
+      headStyles:{fillColor:[15,23,42],textColor:[255,255,255],fontStyle:'bold',fontSize:8.5},
+      styles:{fontSize:8.5},
+      columnStyles:{1:{cellWidth:46,halign:'center'},2:{cellWidth:110,halign:'right'}},
+      didDrawPage:data=>{if(data.pageNumber>1)drawHeader()}
+    });
+    y=doc.lastAutoTable.finalY+16;
+  };
+  section('INCOME',data.income,['Income',[236,253,245],[6,95,70]]);
+  section('EXPENSES',data.expense,['Expenses',[255,241,242],[159,18,57]]);
+  const total=doc.getNumberOfPages();
+  for(let i=1;i<=total;i++){
+    doc.setPage(i);
+    const W=pageW(),H=doc.internal.pageSize.getHeight();
+    doc.setDrawColor(226,232,240);doc.setLineWidth(.6);doc.line(M,H-26,W-M,H-26);
+    doc.setFont('helvetica','normal');doc.setFontSize(8);doc.setTextColor(100,116,139);
+    doc.text('Personal Finance  ·  SOIKOT RAIHAN',M,H-13);
+    doc.text(`Page ${i} of ${total}`,W-M,H-13,{align:'right'});
+  }
+  doc.save(`Income-Expenses-Report-${incomeFilters.year||'All-Years'}-${todayISO()}.pdf`);
+  toast(`Income & Expenses PDF report generated (${total} page${total===1?'':'s'})`);
+}
+
+/* --- Income / Expense category management (Settings) --- */
+function renderCategoryFormFields(){
+  const type=document.getElementById('categoryType').value;
+  const isIncome=type==='Income'||type==='Expense';
+  document.getElementById('majorHeadField').classList.toggle('hidden',!isIncome);
+  const newMajorHidden=isIncome&&document.getElementById('categoryMajorHead').value==='__new__';
+  document.getElementById('newMajorHeadField').classList.toggle('hidden',!newMajorHidden);
+  document.getElementById('subcategoryName').placeholder=isIncome?'e.g. Grocery items':'e.g. Cash in Hand';
+}
+function renderCategoryMajorHeads(){
+  const type=document.getElementById('categoryType').value;
+  const sel=document.getElementById('categoryMajorHead');
+  if(type==='Income'||type==='Expense'){
+    const selected=sel.value;
+    const heads=state.incomeGroups.filter(g=>g.type===type).map(g=>g.majorHead);
+    sel.innerHTML=heads.map(h=>`<option value="${esc(h)}">${esc(h)}</option>`).join('')+`<option value="__new__">＋ New Major Head…</option>`;
+    sel.value=heads.includes(selected)||selected==='__new__'?selected:(heads[0]||'__new__');
+  }
+}
+async function addIncomeGroupCategory(type,name,subcategory){
+  if(!name||!subcategory){toast('Enter both a category and a subcategory name.',true);return}
+  let majorHead=document.getElementById('categoryMajorHead').value;
+  if(majorHead==='__new__'){
+    majorHead=normClass(document.getElementById('newMajorHead').value);
+    if(!majorHead){toast('Enter a name for the new major head.',true);return}
+  }
+  if(!majorHead){toast('Select or create a major head first.',true);return}
+  majorHead=normClass(majorHead);
+  const cls=ensureIncomeClass(type,majorHead,name,subcategory);
+  await putMany('incomeGroups',state.incomeGroups);
+  await loadState();
+  document.getElementById('subcategoryName').value='';
+  renderCategoryMajorHeads();
+  document.getElementById('categoryMajorHead').value=cls.majorHead;
+  renderCategoryFormFields();renderCategoryNameOptions();
+  document.getElementById('categoryName').value=cls.category;
+  renderCategoryTree();renderIncomePage();
+  toast(`Added under ${cls.majorHead} → ${cls.category} → ${cls.subcategory}`);
+}
+async function renameIncomeGroup(id){
+  const g=state.incomeGroups.find(x=>x.id===id);if(!g)return;
+  const name=prompt('Edit major head name:',g.majorHead);
+  if(!name||normClass(name)===g.majorHead)return;
+  const newName=normClass(name),old=g.majorHead;
+  g.majorHead=newName;
+  for(const r of state.incomeExpenses.filter(r=>r.type===g.type&&r.majorHead===old)){r.majorHead=newName;await put('incomeExpenses',r)}
+  await putMany('incomeGroups',state.incomeGroups);
+  await loadState();renderCategoryTree();renderIncomePage();toast('Major head renamed');
+}
+async function deleteIncomeGroup(id){
+  const g=state.incomeGroups.find(x=>x.id===id);if(!g)return;
+  const linked=state.incomeExpenses.some(r=>r.type===g.type&&r.majorHead===g.majorHead);
+  if(linked){toast('This major head has linked transactions and cannot be deleted.',true);return}
+  if(await confirm(`Delete major head "${g.majorHead}" and all of its categories?`,'Delete Major Head')){
+    await remove('incomeGroups',id);
+    await loadState();renderCategoryTree();renderIncomePage();toast('Major head deleted');
+  }
+}
+async function renameIncomeCategory(id,name){
+  const g=state.incomeGroups.find(x=>x.id===id);if(!g)return;
+  const cat=g.categories.find(c=>c.name===name);if(!cat)return;
+  const newName=normClass(prompt('Edit category name:',cat.name)||'');
+  if(!newName||newName===cat.name)return;
+  const old=cat.name;cat.name=newName;
+  for(const r of state.incomeExpenses.filter(r=>r.type===g.type&&r.majorHead===g.majorHead&&r.category===old)){r.category=newName;await put('incomeExpenses',r)}
+  await putMany('incomeGroups',state.incomeGroups);
+  await loadState();renderCategoryTree();renderIncomePage();toast('Category renamed');
+}
+async function deleteIncomeCategory(id,name){
+  const g=state.incomeGroups.find(x=>x.id===id);if(!g)return;
+  const cat=g.categories.find(c=>c.name===name);if(!cat)return;
+  const linked=state.incomeExpenses.some(r=>r.type===g.type&&r.majorHead===g.majorHead&&r.category===name);
+  if(linked){toast('This category has linked transactions and cannot be deleted.',true);return}
+  if(await confirm(`Delete category "${name}" and all of its subcategories?`,'Delete Category')){
+    g.categories=g.categories.filter(c=>c.name!==name);
+    await putMany('incomeGroups',state.incomeGroups);
+    await loadState();renderCategoryTree();renderIncomePage();toast('Category deleted');
+  }
+}
+async function renameIncomeSubcategory(id,catName,name){
+  const g=state.incomeGroups.find(x=>x.id===id);if(!g)return;
+  const cat=g.categories.find(c=>c.name===catName);if(!cat)return;
+  const newName=normClass(prompt('Edit subcategory name:',name)||'');
+  if(!newName||newName===name)return;
+  cat.subcategories=cat.subcategories.map(s=>s===name?newName:s);
+  for(const r of state.incomeExpenses.filter(r=>r.type===g.type&&r.majorHead===g.majorHead&&r.category===catName&&r.subcategory===name)){r.subcategory=newName;await put('incomeExpenses',r)}
+  await putMany('incomeGroups',state.incomeGroups);
+  await loadState();renderCategoryTree();renderIncomePage();toast('Subcategory renamed');
+}
+async function deleteIncomeSubcategory(id,catName,name){
+  const g=state.incomeGroups.find(x=>x.id===id);if(!g)return;
+  const cat=g.categories.find(c=>c.name===catName);if(!cat)return;
+  const linked=state.incomeExpenses.some(r=>r.type===g.type&&r.majorHead===g.majorHead&&r.category===catName&&r.subcategory===name);
+  if(linked){toast('This subcategory has linked transactions and cannot be deleted.',true);return}
+  if(await confirm(`Delete subcategory "${name}"?`,'Delete Subcategory')){
+    cat.subcategories=cat.subcategories.filter(s=>s!==name);
+    await putMany('incomeGroups',state.incomeGroups);
+    await loadState();renderCategoryTree();renderIncomePage();toast('Subcategory deleted');
+  }
+}
+
+/* --- Import workers (called by importExcel dispatcher) --- */
+async function importAssetsLiabilitiesWorkbook(workbook,replaceId,fileName){
+  const migrationId=replaceId||uid('mig');
+  const seen=replaceId?new Set():new Set(state.records.filter(r=>r.sourceSheet).map(r=>`${r.sourceSheet}|${r.sourceRow}`));
+  const toSave=[],years=new Set();
+  let skippedDuplicates=0,manual=0,truncated=0;
+  const summary=[];
+  for(const sheetName of workbook.SheetNames){
+    if(/balance sheet/i.test(sheetName))continue;
+    const schema=findSchemaBySheet(sheetName);
+    if(!schema){manual++;continue}
+    const aoa=XLSX.utils.sheet_to_json(workbook.Sheets[sheetName],{header:1,defval:'',raw:true});
+    if(aoa.length>MAX_IMPORT_ROWS){aoa.length=MAX_IMPORT_ROWS;truncated++}
+    const {records,headerRow}=mapSheetToRecords(schema,aoa);
+    if(headerRow<0){manual++;continue}
+    let count=0;
+    for(const record of records){
+      const key=`${record.sourceSheet}|${record.sourceRow}`;
+      if(seen.has(key)){skippedDuplicates++;continue}
+      seen.add(key);
+      record.id=uid('record');record.updatedAt=new Date().toISOString();
+      record.migrationId=migrationId;
+      if(record.incomeYear)years.add(record.incomeYear);
+      toSave.push(record);count++;
+    }
+    summary.push(`${schema.subcategory}: ${count}`);
+  }
+  if(replaceId&&!toSave.length){toast('The replacement file produced no valid rows — the existing batch was left unchanged.',true);return}
+  const newCategories=[];
+  for(const r of toSave){
+    let category=state.categories.find(c=>c.type===r.type&&c.name===r.category)||newCategories.find(c=>c.type===r.type&&c.name===r.category);
+    if(!category){category={id:uid('category'),type:r.type,name:r.category,subcategories:[]};newCategories.push(category)}
+    if(!category.subcategories.includes(r.subcategory)){category.subcategories.push(r.subcategory);if(!newCategories.includes(category))newCategories.push(category)}
+  }
+  if(newCategories.length)await putMany('categories',newCategories);
+  if(replaceId)await removeMigrationRows(replaceId);
+  if(toSave.length)await putMany('records',toSave);
+  const knownYears=new Set(state.settings.incomeYears||[]);
+  if([...years].some(y=>!knownYears.has(y))){
+    state.settings.incomeYears=[...new Set([...knownYears,...years])].sort((a,b)=>String(b).localeCompare(String(a)));
+    await put('settings',{key:'incomeYears',value:state.settings.incomeYears});
+  }
+  await saveMigrationMeta(migrationId,replaceId,'Assets & Liabilities',fileName,toSave.length,skippedDuplicates);
+  await loadState();renderAll();
+  const truncatedNote=truncated?` ${truncated} sheet(s) were read up to ${MAX_IMPORT_ROWS} rows.`:'';
+  toast(`${replaceId?'Replaced':'Import complete'}: ${toSave.length} imported, ${skippedDuplicates} duplicate(s) skipped, ${manual} sheet(s) need manual review.${truncatedNote}`,manual>0&&!toSave.length);
+  console.info('Excel import summary',summary);
+}
+async function importIncomeExpensesWorkbook(workbook,replaceId,fileName){
+  const migrationId=replaceId||uid('mig');
+  const fiscalStart=findFiscalStart(workbook);
+  const months=['july','august','september','october','november','december','january','february','march','april','may','june'];
+  const monthSheets=[];
+  for(const name of workbook.SheetNames){
+    const m=name.match(/\((\d{2})\)\s*(.+)/i);
+    if(!m)continue;
+    const mi=months.findIndex(mo=>String(m[2]).toLowerCase().startsWith(mo.slice(0,3)));
+    if(mi>=0)monthSheets.push({name,num:+m[1]});
+  }
+  monthSheets.sort((a,b)=>a.num-b.num);
+  const seen=replaceId?new Set():new Set(state.incomeExpenses.filter(r=>r.sourceSheet).map(r=>`${r.sourceSheet}|${r.sourceRow}`));
+  const toSave=[];let skipped=0;
+  for(const ms of monthSheets){
+    const aoa=XLSX.utils.sheet_to_json(workbook.Sheets[ms.name],{header:1,defval:'',raw:true});
+    if(aoa.length>MAX_IMPORT_ROWS)aoa.length=MAX_IMPORT_ROWS;
+    const rows=parseIncomeExpensesSheet(aoa,ms.num,ms.name,fiscalStart);
+    for(const rec of rows){
+      const key=`${ms.name}|${rec.sourceRow}`;
+      if(seen.has(key)){skipped++;continue}
+      seen.add(key);
+      rec.migrationId=migrationId;
+      toSave.push(rec);
+    }
+  }
+  if(replaceId&&!toSave.length){toast('The replacement file produced no valid rows — the existing batch was left unchanged.',true);return}
+  if(replaceId)await removeMigrationRows(replaceId);
+  if(toSave.length)await putMany('incomeExpenses',toSave);
+  await putMany('incomeGroups',state.incomeGroups);
+  const years=new Set(toSave.map(r=>r.incomeYear).filter(Boolean));
+  const known=new Set(state.settings.incomeYears||[]);
+  if([...years].some(y=>!known.has(y))){
+    state.settings.incomeYears=[...new Set([...known,...years])].sort((a,b)=>String(b).localeCompare(String(a)));
+    await put('settings',{key:'incomeYears',value:state.settings.incomeYears});
+  }
+  await saveMigrationMeta(migrationId,replaceId,'Income & Expenses',fileName,toSave.length,skipped);
+  await loadState();renderAll();
+  toast(`${replaceId?'Replaced':'Imported'} ${toSave.length} income/expense entries from Income & Expenses.xlsx (Skipped ${skipped} duplicates)`);
+}
+async function importBudgeFile(aoa,sourceName,replaceId){
+  const migrationId=replaceId||uid('mig');
+  const headerRow=detectBudgeHeader(aoa);
+  if(headerRow<0){toast('No Budge header row found in this file.',true);return}
+  const headerCells=(aoa[headerRow]||[]).map(c=>normKey(String(c??'')));
+  const cols={};headerCells.forEach((c,i)=>{if(c)cols[c]=i});
+  const get=(row,key)=>row[cols[key]];
+  const existingHashes=replaceId?new Set():new Set(state.incomeExpenses.map(r=>r.importHash).filter(Boolean));
+  const toSave=[];let skipped=0;
+  for(let i=headerRow+1;i<aoa.length;i++){
+    const row=aoa[i]||[];
+    const rawDate=get(row,'date');
+    if(!rawDate)continue;
+    const firstCell=normClass(String(row[0]||''));
+    if(!firstCell||firstCell.startsWith('###')||firstCell.startsWith('format version'))continue;
+    const date=parseBudgeDate(rawDate);
+    if(!date)continue;
+    let amount=parseExcelNumber(get(row,'amount'));
+    if(!amount)continue;
+    const type=amount<0?'Expense':'Income';
+    amount=Math.abs(amount);
+    const account=normalizeAccount(get(row,'account'));
+    const category=String(get(row,'category')||'').trim();
+    const subcategory=String(get(row,'subcategory')||'').trim();
+    const payment=String(get(row,'payment')||'').trim();
+    const goal=String(get(row,'goal')||'').trim();
+    const descRaw=String(get(row,'description')||'').trim();
+    const description=buildBudgeDescription(descRaw,payment,goal,category,subcategory);
+    const cls=normalizeBudgeClassification(type,category,subcategory);
+    // Row-level identity, not a content hash: two legitimate transactions that happen to share
+    // the same date, amount, account and category/subcategory are NOT duplicates. The source file
+    // name plus the source row number uniquely identifies each exported row, so re-importing the
+    // same file still skips already-imported rows without silently dropping valid entries.
+    const hash=hashString(`${sourceName||'budge'}|${i+1}`);
+    if(existingHashes.has(hash)){skipped++;continue}
+    existingHashes.add(hash);
+    toSave.push({id:uid('ie'),type,date,incomeYear:fiscalYearFromDate(date),majorHead:cls.majorHead,category:cls.category,subcategory:cls.subcategory,amount,account,description,documentIds:[],importHash:hash,migrationId,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+  }
+  if(replaceId&&!toSave.length){toast('The replacement file produced no valid rows — the existing batch was left unchanged.',true);return}
+  if(replaceId)await removeMigrationRows(replaceId);
+  if(toSave.length)await putMany('incomeExpenses',toSave);
+  await putMany('incomeGroups',state.incomeGroups);
+  const years=new Set(toSave.map(r=>r.incomeYear).filter(Boolean));
+  const known=new Set(state.settings.incomeYears||[]);
+  if([...years].some(y=>!known.has(y))){
+    state.settings.incomeYears=[...new Set([...known,...years])].sort((a,b)=>String(b).localeCompare(String(a)));
+    await put('settings',{key:'incomeYears',value:state.settings.incomeYears});
+  }
+  await saveMigrationMeta(migrationId,replaceId,'Budge CSV',sourceName,toSave.length,skipped);
+  await loadState();renderAll();
+  toast(`${replaceId?'Replaced':'Imported'} ${toSave.length} transactions (Skipped ${skipped} already imported)`);
+}
+
+/* --- Migration batch tracking (Settings → Excel & Budge CSV Migration history) --- */
+async function saveMigrationMeta(id,isReplace,type,fileName,imported,skipped){
+  if(isReplace){
+    const existing=state.migrationHistory.find(m=>m.id===id)||{id};
+    await put('migrationHistory',Object.assign({},existing,{id,fileName,migrationType:type,timestamp:new Date().toISOString(),importedCount:imported,skippedCount:skipped,status:'completed'}));
+  }else if(imported>0){
+    await put('migrationHistory',{id,fileName,migrationType:type,timestamp:new Date().toISOString(),importedCount:imported,skippedCount:skipped,status:'completed'});
+  }
+}
+/** Delete every record and PDF linked to one migration batch (used by both Delete and Replace). */
+async function removeMigrationRows(migrationId){
+  const recordIds=state.records.filter(r=>r.migrationId===migrationId).map(r=>r.id);
+  const ieIds=state.incomeExpenses.filter(r=>r.migrationId===migrationId).map(r=>r.id);
+  const docIds=new Set();
+  for(const r of state.records)if(r.migrationId===migrationId)(r.documentIds||[]).forEach(d=>docIds.add(d));
+  for(const r of state.incomeExpenses)if(r.migrationId===migrationId)(r.documentIds||[]).forEach(d=>docIds.add(d));
+  for(const d of state.documents)if(recordIds.includes(d.recordId)||ieIds.includes(d.recordId))docIds.add(d.id);
+  if(recordIds.length)await removeMany('records',recordIds);
+  if(ieIds.length)await removeMany('incomeExpenses',ieIds);
+  if(docIds.size){await removeMany('documents',[...docIds]);await removeMany('documentBlobs',[...docIds])}
+}
+function renderMigrationHistory(){
+  const host=document.getElementById('migrationHistoryList');
+  if(!host)return;
+  const history=state.migrationHistory.slice().sort((a,b)=>String(b.timestamp).localeCompare(String(a.timestamp)));
+  host.innerHTML=history.length
+    ? `<div class="table-wrap"><table class="migration-history-table"><thead><tr><th scope="col">Date &amp; Time</th><th scope="col">File Name</th><th scope="col">Migration Type</th><th scope="col" class="num">Records Imported</th><th scope="col">Actions</th></tr></thead><tbody>${history.map(m=>`<tr><td>${esc(new Date(m.timestamp).toLocaleString())}</td><td>${esc(m.fileName||'—')}</td><td><span class="badge migration-badge">${esc(m.migrationType||'—')}</span></td><td class="num">${Number(m.importedCount)||0}</td><td class="actions-cell"><button type="button" class="action-link" data-cmd="edit-migration" data-id="${esc(m.id)}">Edit</button><button type="button" class="action-link danger" data-cmd="delete-migration" data-id="${esc(m.id)}">Delete</button></td></tr>`).join('')}</tbody></table></div>`
+    : '<div class="empty-state">No migrations recorded in this browser yet.</div>';
+}
+function migrationRowSummary(r,store){
+  return store==='records'
+    ? {date:r.date,type:r.type,category:r.category,subcategory:r.subcategory,amount:recordAmount(r)}
+    : {date:r.date,type:r.type,category:r.category,subcategory:r.subcategory,amount:Number(r.amount)||0};
+}
+function renderMigrationEditor(id){
+  const mig=state.migrationHistory.find(m=>m.id===id);
+  if(!mig)return;
+  const recRows=state.records.filter(r=>r.migrationId===id).map(r=>({r,store:'records'}));
+  const ieRows=state.incomeExpenses.filter(r=>r.migrationId===id).map(r=>({r,store:'incomeExpenses'}));
+  const rows=[...recRows,...ieRows];
+  document.getElementById('migrationEditTitle').textContent='Edit Migration';
+  document.getElementById('migrationEditSubtitle').textContent=`${mig.migrationType} · ${mig.fileName}`;
+  document.getElementById('migrationEditMeta').textContent=`${rows.length} record(s) in this batch · imported ${new Date(mig.timestamp).toLocaleString()}`;
+  const cells=rows.map(({r,store})=>{
+    const s=migrationRowSummary(r,store);
+    return `<tr><td>${esc(fmtDate(s.date)||'—')}</td><td><span class="badge ${esc(s.type.toLowerCase())}">${esc(s.type)}</span></td><td>${esc(s.category)}</td><td>${esc(s.subcategory)}</td><td class="num">${formatMoney(s.amount)}</td><td class="actions-cell"><button type="button" class="action-link danger" data-cmd="remove-migration-row" data-mig="${esc(id)}" data-store="${store}" data-id="${esc(r.id)}">Remove</button></td></tr>`;
+  }).join('');
+  document.getElementById('migrationEditRows').innerHTML=rows.length
+    ? `<div class="table-wrap"><table class="migration-edit-table"><thead><tr><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Category</th><th scope="col">Subcategory</th><th scope="col" class="num">Amount</th><th scope="col">Action</th></tr></thead><tbody>${cells}</tbody></table></div>`
+    : '<div class="empty-state">No records in this batch. Choose a replacement file to re-import.</div>';
+}
+function editMigration(id){
+  const mig=state.migrationHistory.find(m=>m.id===id);
+  if(!mig)return;
+  replaceMigrationId=id;
+  renderMigrationEditor(id);
+  document.getElementById('migrationEditModal').showModal();
+}
+async function removeMigrationRow(migId,store,id){
+  let docIds=[];
+  if(store==='incomeExpenses'){
+    const r=state.incomeExpenses.find(x=>x.id===id);
+    docIds=[...(r?.documentIds||[]),...state.documents.filter(d=>d.recordId===id).map(d=>d.id)];
+    await remove('incomeExpenses',id);
+  }else{
+    const r=state.records.find(x=>x.id===id);
+    docIds=[...(r?.documentIds||[]),...state.documents.filter(d=>d.recordId===id).map(d=>d.id)];
+    await remove('records',id);
+  }
+  for(const did of new Set(docIds)){await remove('documents',did);await remove('documentBlobs',did)}
+  await loadState();
+  const mig=state.migrationHistory.find(m=>m.id===migId);
+  if(mig){
+    mig.importedCount=state.records.filter(r=>r.migrationId===migId).length+state.incomeExpenses.filter(r=>r.migrationId===migId).length;
+    await put('migrationHistory',mig);
+    renderMigrationEditor(migId);
+  }
+  renderAll();toast('Row removed from migration batch');
+}
+async function deleteMigration(id){
+  const mig=state.migrationHistory.find(m=>m.id===id);
+  if(!mig)return;
+  const count=state.records.filter(r=>r.migrationId===id).length+state.incomeExpenses.filter(r=>r.migrationId===id).length;
+  if(!(await confirm(`Delete migration "${mig.fileName}" and the ${count} record(s) it imported? This cannot be undone.`,'Delete Migration')))return;
+  await removeMigrationRows(id);
+  await remove('migrationHistory',id);
+  await loadState();renderAll();
+  toast(`Migration deleted (${count} record(s) removed)`);
 }
 
 /* ==========================================================================
